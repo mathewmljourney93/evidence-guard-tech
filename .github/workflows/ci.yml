@@ -1,0 +1,582 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }}, Python 3.12)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python 3.12
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.13.0"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Check formatting
+        run: uv run --locked ruff format --check .
+
+      - name: Lint
+        run: uv run --locked ruff check .
+
+      - name: Type-check
+        run: uv run --locked mypy
+
+      - name: Test
+        run: uv run --locked pytest
+
+      - name: Build distribution
+        run: uv build
+
+      - name: Install the wheel in a clean environment and import it
+        run: |
+          set -euo pipefail
+          uv venv "${RUNNER_TEMP}/wheel-check" --python 3.12
+          uv pip install --python "${RUNNER_TEMP}/wheel-check" dist/evidenceguard-*.whl
+          if [ -x "${RUNNER_TEMP}/wheel-check/Scripts/python.exe" ]; then
+            bin="${RUNNER_TEMP}/wheel-check/Scripts"
+          else
+            bin="${RUNNER_TEMP}/wheel-check/bin"
+          fi
+          cd "${RUNNER_TEMP}"
+          "${bin}/python" -I -c "import evidenceguard_api, evidenceguard_domain; from evidenceguard_api.app import create_app; create_app(); print(evidenceguard_api.__file__); assert 'site-packages' in evidenceguard_api.__file__"
+          "${bin}/eg-api" --help
+          "${bin}/eg-worker" --help
+          "${bin}/python" -I -c "from evidenceguard_worker.handlers import production_registry; assert production_registry().kinds == frozenset({'ingest_revision', 'index_revision'}); print('production registry: ingest_revision, index_revision')"
+          # M4c (ADR-0015): run the offline embedder and canonical storage from the installed
+          # wheel and import the indexing modules. No database is contacted; this check does
+          # not establish database indexing (the container smoke does).
+          "${bin}/python" -I - <<'PY'
+          import uuid
+          import evidenceguard_domain.embedding_storage as storage
+          import evidenceguard_persistence.indexing as index_store
+          import evidenceguard_retrieval.embeddings as provider
+          import evidenceguard_worker.indexing as handler
+          from evidenceguard_worker.handlers import production_registry
+          for module in (storage, index_store, provider, handler):
+              assert "site-packages" in (module.__file__ or ""), module.__name__
+          fingerprint = "ad53bb3be5d8c50909b9f984294703d572e8f1844a43c5223ef86cd4a1162376"
+          assert provider.HASH_IDENTITY.fingerprint == fingerprint
+          batch = provider.embed_validated(provider.HashingEmbedder(), ("wheel check", "!!!"), "document")
+          chunks = [(uuid.UUID(int=1), "a" * 64), (uuid.UUID(int=2), "b" * 64)]
+          rows = storage.stored_embeddings(batch, identity=provider.HASH_IDENTITY, chunks=chunks)
+          assert not rows[0].vector.is_zero and rows[1].vector.is_zero
+          assert len(rows[0].vector.wire_bytes()) == 4100
+          assert tuple(handler.SUPPORTED_PROVIDERS) == (fingerprint,)
+          assert production_registry().kinds == frozenset({"ingest_revision", "index_revision"})
+          print("offline embedding, canonical storage and indexing modules ran from the installed wheel")
+          PY
+          # M4d (ADR-0016): import the retrieval modules from the installed wheel and run fusion
+          # on a fixed fixture with a pinned result. No database or provider is contacted; this
+          # check does not establish database retrieval (the PostgreSQL integration job does).
+          "${bin}/python" -I - <<'PY'
+          import uuid
+          from fractions import Fraction
+          import evidenceguard_domain.retrieval as contracts
+          import evidenceguard_persistence.retrieval as store
+          import evidenceguard_worker.retrieval as orchestration
+          for module in (contracts, store, orchestration):
+              assert "site-packages" in (module.__file__ or ""), module.__name__
+          one, two, three = (uuid.UUID(int=n) for n in (1, 2, 3))
+          lists = (
+              contracts.ChannelList(0, "lexical", ((one, 2.0), (two, 1.0))),
+              contracts.ChannelList(0, "vector", ((two, 0.1), (three, 0.2))),
+          )
+          fused = contracts.fuse(lists, query_count=1, vector_skipped=(), k=8)
+          expected = [(two, 1, Fraction(123, 3782)), (one, 2, Fraction(1, 61)), (three, 3, Fraction(1, 62))]
+          assert [(c.chunk_id, c.fused_rank, c.fused_score) for c in fused] == expected
+          print("retrieval modules imported and fusion ran from the installed wheel")
+          PY
+          # M4e (ADR-0017): import the pure evaluation modules from the installed wheel and
+          # compute the specified 2/3 Recall example. The corpus is not in the wheel and no
+          # database is contacted; this check does not establish evaluation (the PostgreSQL
+          # integration job does).
+          "${bin}/python" -I - <<'PY'
+          import uuid
+          from fractions import Fraction
+          import evidenceguard_retrieval.evaluation.anchors as anchors
+          import evidenceguard_retrieval.evaluation.corpus as corpus
+          import evidenceguard_retrieval.evaluation.recall as recall
+          for module in (corpus, anchors, recall):
+              assert "site-packages" in (module.__file__ or ""), module.__name__
+          a, b, c, x, y, z = (uuid.UUID(int=n) for n in range(1, 7))
+          assert recall.recall_at_k([a, x, b, y, z], frozenset({a, b, c}), 5) == Fraction(2, 3)
+          print("evaluation modules imported and Recall@5 = 2/3 computed from the installed wheel")
+          PY
+          # M4f (ADR-0018): import the Voyage adapter and HTTPS transport from the installed wheel
+          # and run the adapter with an in-memory fake transport and one canned response. No
+          # network, key or database is used; this check does not establish live Voyage
+          # compatibility, and production providers stay offline-only.
+          "${bin}/python" -I - <<'PY'
+          import json
+          import evidenceguard_retrieval.voyage as voyage
+          import evidenceguard_worker.voyage_http as transport
+          from evidenceguard_retrieval.embeddings import HASH_IDENTITY
+          from evidenceguard_worker.indexing import SUPPORTED_PROVIDERS
+          for module in (voyage, transport):
+              assert "site-packages" in (module.__file__ or ""), module.__name__
+          fingerprint = "827fb43a08091171e8eea7b14f6943506646aff6e4dafe7e6fd47cca643cc109"
+          assert voyage.VOYAGE_IDENTITY.fingerprint == fingerprint
+          vector = [0.0] * 1024
+          vector[0] = 1.0
+          row = {"object": "embedding", "embedding": vector, "index": 0}
+          document = {"object": "list", "data": [row], "model": "voyage-4-lite", "usage": {"total_tokens": 2}}
+          class FakeTransport:
+              def post(self, request):
+                  assert json.loads(request)["model"] == "voyage-4-lite"
+                  return voyage.VoyageResponse(200, json.dumps(document).encode())
+          batch = voyage.VoyageEmbedder(FakeTransport()).embed(("wheel check",), "document")
+          assert batch.identity == voyage.VOYAGE_IDENTITY and batch.vectors[0][0] == 1.0
+          assert batch.usage.input_tokens == 2
+          assert tuple(SUPPORTED_PROVIDERS) == (HASH_IDENTITY.fingerprint,)
+          print("Voyage adapter validated a mocked response from the installed wheel")
+          PY
+          # M5a (ADR-0019): import the model-call contracts, the call boundary and the scripted
+          # fake from the installed wheel and classify one scripted response. No network,
+          # provider, key or database is used; the fake is a contract fixture, not a model.
+          "${bin}/python" -I - <<'PY'
+          import json
+          import evidenceguard_agents.providers as providers
+          import evidenceguard_agents.scripted as scripted
+          import evidenceguard_domain.agent_outputs as outputs
+          import evidenceguard_domain.model_calls as calls
+          for module in (providers, scripted, outputs, calls):
+              assert "site-packages" in (module.__file__ or ""), module.__name__
+          prompt = calls.PromptRef(prompt_id="verifier", version=1, sha256="1" * 64)
+          request = calls.StructuredRequest(purpose=calls.ModelPurpose.VERIFIER, prompt=prompt, model_id=scripted.FAKE_MODEL_ID, question_id="RET-01", system_text="system", user_text="user", max_output_tokens=2048)
+          assert request.request_sha256 == "20dcc59a564e16ff0069090555c0d14a4fbd5981beaa674f53c27002d64faf3d"
+          document = {"verdict": "supported", "claims": [{"text": "c", "citations": [{"chunk_id": "00000000-0000-0000-0000-000000000001", "quote": "q"}]}], "rationale": "r"}
+          fake = scripted.ScriptedFakeProvider(scripts={("verifier", "RET-01"): (scripted.Respond(json.dumps(document)), scripted.Refuse())})
+          result = providers.call_validated(fake, request, clock=iter((1.0, 1.5)).__next__)
+          assert result.outcome is calls.CallOutcome.COMPLETED and result.latency_ms == 500
+          assert type(result.output) is outputs.VerifierOutput and result.output.verdict.value == "supported"
+          assert type(result.output.claims) is tuple and result.output.claims[0].citations[0].quote == "q"
+          assert providers.call_validated(fake, request).outcome is calls.CallOutcome.REFUSAL
+          assert providers.call_validated(fake, request).outcome is calls.CallOutcome.PROVIDER_FAILED
+          print("model-call contracts classified a scripted fake response from the installed wheel")
+          PY
+          # M5b (ADR-0020): import the provenance module from the installed wheel, match one quote
+          # across a line break with exact original offsets and derive a status. No provider,
+          # network or database is used; this is a contract check, not a semantic judgment.
+          "${bin}/python" -I - <<'PY'
+          import hashlib
+          import uuid
+          import evidenceguard_domain.provenance as provenance
+          from evidenceguard_domain.evidence import Authenticity, Citation, EvidenceStatus, SourceType, Verdict
+          from evidenceguard_domain.retrieval import ChunkEvidence, SourceSpan
+          assert "site-packages" in (provenance.__file__ or ""), provenance.__name__
+          text = "Customer data is encrypted" + chr(10) + "  at rest."
+          span = SourceSpan(5, 6, 200, 200 + len(text))
+          evidence = ChunkEvidence(uuid.UUID(int=1), text, hashlib.sha256(text.encode()).hexdigest(), 0, ("Encryption",), False, span, None, "security-overview", "Security Overview", 1, None, None, SourceType.VENDOR_STATEMENT, Authenticity.NOT_ESTABLISHED)
+          match = provenance.match_quote(evidence, "encrypted at rest")
+          original = "encrypted" + chr(10) + "  at rest"
+          assert (match.kind, match.text_start, match.text_end) == (provenance.QuoteSpanKind.BODY, 17, 36)
+          assert (match.source_char_start, match.source_char_end, match.quote, match.occurrences) == (217, 236, original, 1)
+          assert provenance.match_quote(evidence, "decrypted at rest") is provenance.RejectionReason.QUOTE_NOT_FOUND
+          citation = Citation(tenant_id=uuid.UUID(int=7), document_revision_id=uuid.UUID(int=8), chunk_id=uuid.UUID(int=1), source_type=SourceType.VENDOR_STATEMENT, quote=match.quote)
+          assert citation.quote == original
+          assert provenance.derive_status(Verdict.SUPPORTED, (citation,)) is EvidenceStatus.VENDOR_CLAIM
+          assert provenance.derive_status(Verdict.CONTRADICTED, (citation,)) is None
+          print("provenance matched a quote and derived a status from the installed wheel")
+          PY
+          # M5c (ADR-0021): load the packaged template and prompts through the pinned loaders,
+          # plan, and assemble one Verifier request from a fixed evidence fixture; its digests
+          # are pinned independently. No provider, network or database is used.
+          "${bin}/python" -I - <<'PY'
+          import hashlib
+          import uuid
+          from datetime import UTC, datetime
+          from fractions import Fraction
+          from importlib.resources import files
+          import evidenceguard_agents.assembly as assembly
+          import evidenceguard_agents.planner as planner
+          import evidenceguard_agents.prompts as prompts
+          import evidenceguard_agents.templates as templates
+          from evidenceguard_domain.evidence import Authenticity, SourceType
+          from evidenceguard_domain.model_calls import ModelPurpose, PromptRef
+          from evidenceguard_domain.provenance import QuestionEvidence
+          from evidenceguard_domain.retrieval import RETRIEVAL_CONFIG_V1, ChannelHit, ChunkEvidence, PendingExclusions, RetrievalResult, RetrievalSnapshot, RetrievedChunk, RevisionBinding, SourceSpan
+          from evidenceguard_retrieval.embeddings import HASH_IDENTITY
+          for module in (assembly, planner, prompts, templates):
+              assert "site-packages" in (module.__file__ or ""), module.__name__
+          data = files("evidenceguard_agents").joinpath("data")
+          assert "site-packages" in str(data), str(data)
+          template_sha = "26fcbe26dcc47f5991da5b741475c736cec27b1f2bd6ab515ec07ac59895786a"
+          prompt_sha = "629f8f972a0f5d6247a54364da59f04d53a1a023472fa00830ebedfe106b007d"
+          analyst_sha = "f8e485998dc2ff79c839100c27326a6e119135788060237a9fcbe5fed0051b29"
+          template_bytes = data.joinpath("templates", "vendor_security_review_v1.toml").read_bytes()
+          assert hashlib.sha256(template_bytes).hexdigest() == template_sha
+          ref = templates.TemplateRef(template_id="vendor_security_review", version=1, sha256=template_sha)
+          template = templates.load_pinned_template(ref)
+          assert [q.question_id for q in template.questions] == ["RET-01", "ENC-01", "CMP-01", "CMP-02", "INC-01", "BCP-01", "SUB-01", "SOC-01"]
+          planned = planner.plan_review(template)
+          assert len(planned) == 8 and planned[1].retrieval.k == 8
+          assert planned[1].retrieval.queries == ("customer data encryption at rest", "stored data encryption")
+          spec, system_text = prompts.load_pinned_prompt(PromptRef(prompt_id="verifier", version=1, sha256=prompt_sha), ModelPurpose.VERIFIER)
+          assert hashlib.sha256(system_text.encode("utf-8")).hexdigest() == prompt_sha
+          prompts.load_pinned_prompt(PromptRef(prompt_id="risk_analyst", version=1, sha256=analyst_sha), ModelPurpose.RISK_ANALYST)
+          tenant, rev, doc = uuid.UUID("11111111-1111-4111-8111-111111111111"), uuid.UUID("33333333-3333-4333-8333-333333333333"), uuid.UUID("44444444-4444-4444-8444-444444444444")
+          binding = RevisionBinding(rev, doc, uuid.UUID("5b7601bd-c104-574b-afc4-8e43c3da8ecc"), "md-v1", 2, "a" * 64, "b" * 64)
+          snapshot = RetrievalSnapshot(tenant_id=tenant, vendor_id=uuid.UUID("22222222-2222-4222-8222-222222222222"), identity=HASH_IDENTITY, config=RETRIEVAL_CONFIG_V1, bindings=(binding,), exclusions=PendingExclusions(0, (), False), captured_at=datetime(2026, 10, 17, 9, 30, tzinfo=UTC))
+          body = "Customer data is encrypted at rest."
+          chunk = ChunkEvidence(uuid.UUID(int=1), body, hashlib.sha256(body.encode()).hexdigest(), 0, ("Encryption",), False, SourceSpan(5, 6, 200, 200 + len(body)), None, "security-overview", "Security Overview", 1, None, None, SourceType.VENDOR_STATEMENT, Authenticity.NOT_ESTABLISHED)
+          item = RetrievedChunk(chunk_id=uuid.UUID(int=1), revision_id=rev, document_id=doc, fused_rank=1, fused_score=Fraction(1, 61), hits=(ChannelHit(0, "lexical", 1, 1.0),), evidence=chunk)
+          result = RetrievalResult(snapshot, 1, 8, (), (item,))
+          evidence = QuestionEvidence(tenant_id=tenant, review_id=uuid.UUID(int=8), snapshot_sha256=result.snapshot_sha256, question=planned[1].question, result=result)
+          inputs = assembly.VerifierRequestInputs(evidence=evidence, prompt=spec, system_text=system_text, settings=assembly.ModelSettings(model_id="fake-scripted-v1"))
+          request = assembly.assemble_verifier_request(inputs)
+          assert hashlib.sha256(request.user_text.encode("utf-8")).hexdigest() == "d9be2e48d1a403f0e5974f6f1be263198ea501c887579cff905dc1463cb748c6"
+          assert request.request_sha256 == "59eaf2e372637cda70ff659c66e8d2a97d032ec323cd89d9f07b26aa35746580"
+          print("review template, prompts and request assembly ran from the installed wheel")
+          PY
+          "${bin}/python" -I -c "import io; from alembic import command; from evidenceguard_persistence.migration_config import alembic_config; buf = io.StringIO(); command.upgrade(alembic_config(output_buffer=buf), 'head', sql=True); assert 'CREATE TABLE api_keys' in buf.getvalue(); print('offline migration SQL rendered from the installed wheel')"
+          "${bin}/python" -I -c "import io; from alembic import command; from evidenceguard_persistence.migration_config import alembic_config; buf = io.StringIO(); command.upgrade(alembic_config(output_buffer=buf), 'head', sql=True); assert 'CREATE TABLE reviews' in buf.getvalue(); print('offline review migration SQL rendered from the installed wheel')"
+          # M5e (ADR-0023): render the stage tables offline and plan one scripted history (an
+          # invalid output, then a repair started by attempt 1, planned at attempt 2). No database
+          # is contacted; this check does not establish M5e persistence (the PostgreSQL job does).
+          "${bin}/python" -I - <<'PY'
+          import io
+          import uuid
+          from datetime import UTC, datetime
+          from alembic import command
+          import evidenceguard_domain.review_stages as stages
+          import evidenceguard_persistence.review_stages as persistence
+          from evidenceguard_domain.model_calls import CallOutcome, ModelUsage
+          from evidenceguard_persistence.migration_config import alembic_config
+          for module in (stages, persistence):
+              assert "site-packages" in (module.__file__ or ""), module.__name__
+          buf = io.StringIO()
+          command.upgrade(alembic_config(output_buffer=buf), "head", sql=True)
+          assert "CREATE TABLE review_stage_calls" in buf.getvalue()
+          ids = {"tenant_id": uuid.UUID(int=1), "review_id": uuid.UUID(int=2), "job_id": uuid.UUID(int=3), "question_id": "ENC-01", "stage": stages.StageKind.VERIFICATION}
+          common = {**ids, "prompt_sha256": "1" * 64, "model_requested": "fake-scripted-v1", "max_output_tokens": 4096, "timeout_ms": 60000, "evidence_sha256": "e" * 64, "dependency_sha256": None, "job_attempt": 1, "started_at": datetime(2026, 10, 23, tzinfo=UTC)}
+          first = stages.CallRecord(**common, sequence=1, call_kind=stages.CallKind.INITIAL, request_basis=stages.RequestBasis.ORIGINAL, request_sha256="a" * 64, state=stages.ReservationState.COMPLETED, completed_at=datetime(2026, 10, 23, tzinfo=UTC), outcome=CallOutcome.INVALID_OUTPUT, dispatched=True, model_used="fake-scripted-v1", usage=ModelUsage(1, 1), latency_ms=1)
+          repair = stages.CallRecord(**common, sequence=2, call_kind=stages.CallKind.REPAIR, request_basis=stages.RequestBasis.REPAIRED, request_sha256="b" * 64, state=stages.ReservationState.STARTED)
+          plan = stages.plan_stage(stages.StageHistory(**ids, current_attempt=2, calls=(first, repair), committed=None))
+          assert type(plan) is stages.PlanDispatch
+          assert (plan.call_kind, plan.request_basis, plan.sequence) == (stages.CallKind.RETRY, stages.RequestBasis.REPAIRED, 3)
+          print("stage migration SQL rendered and an abandoned repair planned as a retry from the installed wheel")
+          PY
+
+          # M5f (ADR-0024): pure report construction/strict decode/render only; no database,
+          # provider, runtime review path or model-quality evidence. All prior checks stay intact.
+          "${bin}/python" -I - <<'PY'
+          import dataclasses
+          import hashlib
+          import json
+          import uuid
+          from datetime import UTC, datetime
+
+          import evidenceguard_agents.report as renderer
+          import evidenceguard_domain.report_content as reports
+          from evidenceguard_agents.templates import ReviewTemplate, TemplateRef
+          from evidenceguard_domain.embedding_storage import index_id, profile_id
+          from evidenceguard_domain.evidence import EvidenceQuestion
+          from evidenceguard_domain.model_calls import PromptRef
+          from evidenceguard_domain.retrieval import RETRIEVAL_CONFIG_V1, PendingExclusions, RetrievalSnapshot, RevisionBinding
+          from evidenceguard_domain.review_stages import PlannedQuestionSet, StageHistory, StageKind, StageOutcome, StageRecord, TrustedQuestionStages, TrustedStages, UnresolvedReason, dependency_sha256, plan_question_sha256
+          from evidenceguard_domain.reviews import ReviewConfiguration, ReviewRequest, TrustedReview, request_sha256
+          from evidenceguard_retrieval.embeddings import HASH_IDENTITY
+
+          for module in (renderer, reports):
+              assert "site-packages" in (module.__file__ or ""), module.__name__
+          tenant, review, vendor, job = (uuid.UUID(int=n) for n in (1, 2, 3, 4))
+          stamp = datetime(2026, 10, 23, tzinfo=UTC)
+          config = ReviewConfiguration(template_id="report_test", template_version=1, template_sha256="f"*64, verifier_prompt=PromptRef(prompt_id="verifier", version=1, sha256="1"*64), analyst_prompt=PromptRef(prompt_id="analyst", version=1, sha256="2"*64), model_id="fake-scripted-v1")
+          snapshot = RetrievalSnapshot(tenant_id=tenant, vendor_id=vendor, identity=HASH_IDENTITY, config=RETRIEVAL_CONFIG_V1, bindings=(RevisionBinding(uuid.UUID(int=5), uuid.UUID(int=6), index_id(tenant, uuid.UUID(int=5), "md-v1", profile_id(tenant, HASH_IDENTITY.fingerprint)), "md-v1", 1, "a"*64, "b"*64),), exclusions=PendingExclusions(0, (), False), captured_at=stamp)
+          request = ReviewRequest(vendor_id=vendor, idempotency_key="report-test", identity=HASH_IDENTITY, config=RETRIEVAL_CONFIG_V1, configuration=config)
+          trusted = TrustedReview(tenant_id=tenant, review_id=review, job_id=job, request=request, request_sha256=request_sha256(request, tenant_id=tenant), snapshot=snapshot)
+          question = EvidenceQuestion(question_id="QQ-01", text="Question?", search_queries=("query",))
+          template = ReviewTemplate(ref=TemplateRef(template_id="report_test", version=1, sha256="f"*64), title="Report \u03a9", questions=(question,))
+          planned = PlannedQuestionSet(tenant_id=tenant, review_id=review, questions=(question,))
+          common = dict(tenant_id=tenant, review_id=review, job_id=job, question_id="QQ-01", outcome=StageOutcome.UNRESOLVED, call_sequence=None, request_sha256=None, evidence_sha256=None, content=None, job_attempt=1, committed_at=stamp)
+          verification = StageRecord(**common, stage=StageKind.VERIFICATION, unresolved_reason=UnresolvedReason.EVIDENCE_TOO_LARGE, dependency_sha256=None)
+          dep = dependency_sha256(tenant_id=tenant, review_id=review, question_id="QQ-01", question_sha256=plan_question_sha256(question), owner_outcome=verification.outcome, owner_content_sha256=None, owner_reason=verification.unresolved_reason)
+          analysis = StageRecord(**common, stage=StageKind.ANALYSIS, unresolved_reason=UnresolvedReason.VERIFICATION_UNRESOLVED, dependency_sha256=dep)
+          def history(record):
+              return StageHistory(tenant_id=tenant, review_id=review, job_id=job, question_id="QQ-01", stage=record.stage, current_attempt=1, calls=(), committed=record)
+          stages = TrustedStages(tenant_id=tenant, review_id=review, job_id=job, job_attempt=1, questions=(TrustedQuestionStages(question=question, evidence=None, verification=verification, analysis=analysis, verification_history=history(verification), analysis_history=history(analysis)),))
+          value = renderer.build_report_content(trusted, template, planned, stages)
+          # Test-owned canonical object, not generated by the report codec or model_dump.
+          def enc(obj, ascii_only=True):
+              return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=ascii_only, allow_nan=False).encode("ascii" if ascii_only else "utf-8")
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+          cfg = {"canonical":"eg-review-configuration-v1","kind":"review_configuration","template":{"id":"report_test","version":1,"sha256":"f"*64},"verifier_prompt":{"id":"verifier","version":1,"sha256":"1"*64},"analyst_prompt":{"id":"analyst","version":1,"sha256":"2"*64},"model":{"model_id":"fake-scripted-v1","max_output_tokens":4096,"timeout_ms":60000},"retrieval_k":8}
+          q = {"question_id":"QQ-01","text":"Question?","search_queries":["query"],"requires_documentary_support":False}
+          plan_sha = sha(enc({"canonical":"eg-review-plan-question-v1",**q}))
+          expected_dep = sha(enc({"canonical":"eg-review-stage-dependency-v1","tenant_id":str(tenant),"review_id":str(review),"question_id":"QQ-01","question_sha256":plan_sha,"owner":{"outcome":"unresolved","content_sha256":None,"unresolved_reason":"evidence_too_large"},"shared":[]}))
+          legacy = {"schema":"evidenceguard.report-content.v1","content":{"tenant_id":str(tenant),"title":"Report \u03a9","questions":[q],"findings":[],"unresolved_question_ids":["QQ-01"]}}
+          def stage(shape, reason, dependency):
+              return {"shape":shape,"outcome":"unresolved","unresolved_reason":reason,"request_sha256":None,"content_sha256":None,"evidence_sha256":None,"dependency_sha256":dependency,"value":None}
+          expected = {"schema":"evidenceguard.review-report-content.v1","renderer":"evidenceguard.review-report-markdown.v1","mode":"contract","binding":{"tenant_id":str(tenant),"review_id":str(review),"vendor_id":str(vendor),"job_id":str(job),"review_request_sha256":trusted.request_sha256,"snapshot_sha256":snapshot.sha256,"configuration":cfg,"configuration_sha256":sha(enc(cfg))},"legacy":legacy,"legacy_sha256":sha(enc(legacy,False)),"questions":[{"question_id":"QQ-01","position":0,"plan_question_sha256":plan_sha,"verification":stage("U4","evidence_too_large",None),"analysis":stage("U3","verification_unresolved",expected_dep),"findings":[]}]}
+          expected_bytes = enc(expected)
+          assert sha(expected_bytes) == "8ded0d762e618d47386c4ddbb925be3802546c1026c0dea327da7e0c3b269303"
+          assert reports.review_report_bytes(value) == expected_bytes
+          assert reports.review_report_sha256(value) == sha(expected_bytes)
+          decoded = reports.decode_review_report(expected_bytes, expected_sha256=sha(expected_bytes))
+          assert decoded == value
+          markdown = renderer.render_report_markdown(decoded)
+          assert markdown.startswith("# EvidenceGuard review\n\n## Contract and binding\n")
+          assert markdown.endswith("Question ID 1:\n\n    \"QQ-01\"\n")
+          assert "NOT a quality measurement of Claude or semantic retrieval" in markdown
+          for invalid in (expected_bytes+b"\n", expected_bytes.replace(b'"position":0', b'"position":true')):
+              try:
+                  reports.decode_review_report(invalid, expected_sha256=sha(invalid))
+              except reports.InvalidReportEncodingError as error:
+                  assert error.__cause__ is None and error.__context__ is None
+              else:
+                  raise AssertionError("malformed report accepted")
+          try:
+              reports.ReportFindingRef(kind=reports.FindingKind.ANALYST, index=True, finding_id=uuid.UUID(int=1), follow_up_questions=())
+          except reports.InvalidReportValueError:
+              pass
+          else:
+              raise AssertionError("boolean index accepted")
+          print("hash-covered review report built, strictly decoded and rendered offline from the installed wheel")
+          PY
+
+          # M5g (ADR-0025): import the orchestration and output modules, refuse a handler without a
+          # provider and render migration 0008 offline. No database, provider or runtime review
+          # path is used; this check does not establish M5g persistence (the PostgreSQL job does).
+          "${bin}/python" -I - <<'PY'
+          import io
+          from alembic import command
+          import evidenceguard_domain.review_outputs as outputs
+          import evidenceguard_persistence.review_outputs as output_store
+          import evidenceguard_worker.review as orchestration
+          from evidenceguard_persistence.migration_config import alembic_config
+          from evidenceguard_worker.handlers import production_registry
+          for module in (outputs, output_store, orchestration):
+              assert "site-packages" in (module.__file__ or ""), module.__name__
+          try:
+              orchestration.make_run_review_handler()
+          except TypeError:
+              pass
+          else:
+              raise AssertionError("a handler was built without a model provider")
+          assert str(orchestration.REVIEW_WORKER_ACTOR_ID) == "382866d6-e3c2-5725-999c-3a181e4e661c"
+          assert production_registry().kinds == frozenset({"ingest_revision", "index_revision"})
+          buf = io.StringIO()
+          command.upgrade(alembic_config(output_buffer=buf), "0007:0008", sql=True)
+          rendered = buf.getvalue()
+          assert "CREATE TABLE review_outputs" in rendered
+          assert "ADD CONSTRAINT uq_reviews_tenant_id_id_run_review_job_id UNIQUE" in rendered
+          print("review orchestration imported and migration 0008 rendered offline from the installed wheel")
+          PY
+
+          # M5h (ADR-0026): import the Anthropic adapter and HTTPS transport from the installed
+          # wheel and classify one synthetic response through call_validated over an injected
+          # transport. No network, key, provider or database is used; this check does not
+          # establish live Anthropic compatibility, and nothing registers the adapter.
+          "${bin}/python" -I - <<'PY'
+          import json
+          from pydantic import SecretStr
+          import evidenceguard_agents.anthropic as anthropic
+          import evidenceguard_agents.providers as providers
+          import evidenceguard_domain.agent_outputs as outputs
+          import evidenceguard_domain.model_calls as calls
+          import evidenceguard_worker.anthropic_http as https
+          from evidenceguard_worker.handlers import production_registry
+          for module in (anthropic, https):
+              assert "site-packages" in (module.__file__ or ""), module.__name__
+          prompt = calls.PromptRef(prompt_id="verifier", version=1, sha256="1" * 64)
+          request = calls.StructuredRequest(purpose=calls.ModelPurpose.VERIFIER, prompt=prompt, model_id="claude-wheel-check", question_id="RET-01", system_text="system", user_text="user", max_output_tokens=2048)
+          expected = b'{"max_tokens":2048,"messages":[{"content":"user","role":"user"}],"model":"claude-wheel-check","system":"system"}'
+          document = {"verdict": "supported", "claims": [{"text": "c", "citations": [{"chunk_id": "00000000-0000-0000-0000-000000000001", "quote": "q"}]}], "rationale": "r"}
+          message = {"type": "message", "role": "assistant", "model": "claude-wheel-check", "content": [{"type": "text", "text": json.dumps(document)}], "stop_reason": "end_turn", "usage": {"input_tokens": 3, "output_tokens": 4}}
+          class FakeTransport:
+              def __init__(self):
+                  self.calls = []
+              def post(self, body, *, timeout_ms):
+                  self.calls.append((body, timeout_ms))
+                  return anthropic.AnthropicResponse(200, json.dumps(message).encode())
+          fake = FakeTransport()
+          result = providers.call_validated(anthropic.AnthropicProvider(fake), request, clock=iter((1.0, 1.25)).__next__)
+          assert fake.calls == [(expected, 60000)]
+          assert result.outcome is calls.CallOutcome.COMPLETED and result.latency_ms == 250
+          assert type(result.output) is outputs.VerifierOutput and result.usage == calls.ModelUsage(3, 4)
+          assert repr(https.HttpsAnthropicTransport(SecretStr("wheel-check-placeholder"))) == "HttpsAnthropicTransport()"
+          assert production_registry().kinds == frozenset({"ingest_revision", "index_revision"})
+          print("Anthropic adapter classified a synthetic response through call_validated from the installed wheel")
+          PY
+          # M5 completion (Prompt 234): closed ephemeral spans, without database/provider I/O.
+          "${bin}/python" -I - <<'PY'
+          import json
+          import logging
+          import uuid
+          from sqlalchemy.orm import sessionmaker
+          import evidenceguard_observability.provider_spans as spans
+          import evidenceguard_observability.jsonlog as logs
+          import evidenceguard_worker.review as review
+          from evidenceguard_agents.scripted import Respond, ScriptedFakeProvider
+          from evidenceguard_worker.handlers import production_registry
+          for module in (spans, logs, review):
+              assert "site-packages" in (module.__file__ or ""), module.__name__
+          identity = dict(tenant_id=uuid.UUID(int=1), review_id=uuid.UUID(int=2),
+                          job_id=uuid.UUID(int=3), question_id="SEC-01", stage="verification",
+                          sequence=1, job_attempt=1)
+          trace_id, span_id = spans.provider_call_ids(**identity)
+          span = spans.ProviderCallSpan(**identity, trace_id=trace_id, span_id=span_id,
+              request_sha256="a" * 64, started_ns=10, ended_ns=12, duration_ns=2,
+              timing_status="ok", call_outcome="completed", exit_kind="returned")
+          collector = spans.BoundedSpanCollector(capacity=1)
+          collector.emit(span)
+          assert collector.snapshot() == (span,) and collector.dropped_count == 0
+          record = logging.LogRecord("evidenceguard.provider_calls", logging.INFO, "", 0,
+                                     logs.PROVIDER_CALL_SPAN, (), None)
+          setattr(record, logs.FIELDS_ATTRIBUTE, {"span": collector.snapshot()[0]})
+          payload = json.loads(logs.JsonFormatter().format(record))
+          assert payload["span"]["trace_id"] == str(trace_id)
+          assert payload["span"]["span_id"] == str(span_id)
+          assert payload["span"]["duration_ns"] == 2 and len(payload["span"]) == 17
+          assert payload["span"]["call_outcome"] == "completed"
+          fake = ScriptedFakeProvider(scripts={("verifier", "SEC-01"): (Respond("{}"),)})
+          assert callable(review.make_run_review_handler(fake,
+                          session_factory=sessionmaker(), span_sink=collector))
+          assert production_registry().kinds == frozenset({"ingest_revision", "index_revision"})
+          print("provider-call span collected and serialized from the installed wheel")
+          PY
+          # W8 (ADR-0027): from the installed wheel, with no review variables set, reviews are off;
+          # the registry gains run_review only from an explicitly passed handler (built here over
+          # the scripted test provider, never a live one); the API documents the review routes.
+          # No network, key, provider call or database is used.
+          env -u EG_REVIEW_PROVIDER -u EG_REVIEW_MODEL -u EG_ANTHROPIC_API_KEY "${bin}/python" -I - <<'PY'
+          from sqlalchemy.orm import sessionmaker
+          import evidenceguard_api.reviews as review_api
+          import evidenceguard_worker.review_wiring as wiring
+          from evidenceguard_agents.scripted import Respond, ScriptedFakeProvider
+          from evidenceguard_api.app import create_app
+          from evidenceguard_persistence.settings import load_review_settings
+          from evidenceguard_worker.handlers import production_registry
+          from evidenceguard_worker.review import make_run_review_handler
+          for module in (review_api, wiring):
+              assert "site-packages" in (module.__file__ or ""), module.__name__
+          assert load_review_settings() is None
+          assert wiring.load_review_provider() is None
+          fake = ScriptedFakeProvider(scripts={("verifier", "SEC-01"): (Respond("{}"),)})
+          handler = make_run_review_handler(fake, session_factory=sessionmaker())
+          kinds = production_registry(review_handler=handler).kinds
+          assert kinds == frozenset({"ingest_revision", "index_revision", "run_review"}), kinds
+          assert production_registry().kinds == frozenset({"ingest_revision", "index_revision"})
+          paths = create_app().openapi()["paths"]
+          assert {"/v1/reviews", "/v1/reviews/{review_id}", "/v1/reviews/{review_id}/result", "/v1/review-templates"} <= set(paths)
+          print("reviews off without settings; run_review registered only with a passed handler; review routes documented")
+          PY
+
+  integration:
+    # PostgreSQL integration tests. Service containers run only on Linux runners, so this job
+    # is Ubuntu-only; the verify job keeps the database-independent checks on both systems.
+    name: integration (ubuntu-24.04, PostgreSQL 17 + pgvector)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg17@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d
+        env:
+          # Disposable credentials for this throwaway CI container only.
+          POSTGRES_USER: evidenceguard
+          POSTGRES_PASSWORD: evidenceguard-ci-only
+          POSTGRES_DB: evidenceguard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U evidenceguard -d evidenceguard_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      EG_TEST_DATABASE_URL: postgresql+psycopg://evidenceguard:evidenceguard-ci-only@localhost:5432/evidenceguard_test
+      EG_REQUIRE_INTEGRATION: "1"
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python 3.12
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.13.0"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Confirm the database is ready
+        run: docker exec "${{ job.services.postgres.id }}" pg_isready -U evidenceguard -d evidenceguard_test
+
+      - name: Run integration tests
+        run: uv run --locked pytest -m integration
+
+      - name: Run review database mutation controls
+        run: uv run --locked --no-sync --offline python infra/ci/review_mutations.py
+
+  container:
+    # M3f (ADR-0012): image build, effective build-context check, image checks and a Compose smoke
+    # test. Linux containers need an Ubuntu runner. Development stack only; nothing is published.
+    name: container (ubuntu-24.04, image build and Compose smoke)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      # One selection for every step: the same Compose file, project name and image tag.
+      EG_COMPOSE_PROJECT: eg-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      EG_IMAGE: evidenceguard:ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate the rendered Compose configuration
+        run: python3 infra/ci/container_ci.py config
+
+      - name: Verify the effective build context
+        run: python3 infra/ci/container_ci.py context
+
+      - name: Build the application image
+        run: |
+          set -euo pipefail
+          timeout 900 docker compose -f docker-compose.yml -p "$EG_COMPOSE_PROJECT" build api
+          echo "EG_IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$EG_IMAGE")" >> "$GITHUB_ENV"
+
+      - name: Check the image
+        run: python3 infra/ci/container_ci.py image
+
+      - name: Compose smoke test
+        run: python3 infra/ci/container_ci.py smoke
+
+      - name: Clean up this run's Compose project and image
+        # Runs whatever the outcome. Losing the runner or a hard cancellation can still prevent it.
+        if: always()
+        run: python3 infra/ci/container_ci.py cleanup
