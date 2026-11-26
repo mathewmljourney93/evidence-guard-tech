@@ -293,7 +293,7 @@ Each lifecycle is a pure function in `evidenceguard_domain.state`, tested exhaus
 
 **Test substitute:** `HashingEmbedder`.
 - Feature-hashed unigrams and bigrams, 1024 dimensions.
-- Always reported as "lexical-hash baseline — not semantic", with `embedding_model = "fake-hash-v1"`.
+- Always reported as "lexical-hash baseline - not semantic", with `embedding_model = "fake-hash-v1"`.
 
 **Hybrid search**
 - Lexical: PostgreSQL full-text search (`websearch_to_tsquery`, `ts_rank_cd`), top 20.
@@ -329,7 +329,7 @@ All endpoints except `/healthz` and `/readyz` are under `/v1` and need `Authoriz
 
 | Method & path | Purpose | Request → response | Authorization | Errors and concurrency |
 |---|---|---|---|---|
-| GET `/healthz` | Liveness | → `{status}` | none | — |
+| GET `/healthz` | Liveness | → `{status}` | none | - |
 | GET `/readyz` | Database and migrations ready | → `{status, checks}` | none | 503 |
 | GET `/v1/me` | Resolved principal | → `Principal` | any key | 401 missing or revoked |
 | POST `/v1/vendors` | Create a vendor | `VendorCreate` → 201 `Vendor` | reviewer+ | 409 duplicate slug |
@@ -340,7 +340,7 @@ All endpoints except `/healthz` and `/readyz` are under `/v1` and need `Authoriz
 | GET `/v1/documents/{id}/revisions` | Revision history, newest first (M3e, accepted specification) | → `Page[RevisionView]` | reviewer+ | 404 |
 | GET `/v1/documents/{id}/revisions/{rev}/chunks` | Inspect chunks; `{rev}` is the revision number (M3e, accepted specification) | → `Page[ChunkView]` | reviewer+ | 404 |
 | GET `/v1/jobs/{id}` | Job status | → `JobView` | reviewer+ | 404 |
-| GET `/v1/review-templates` | List templates | → `list[TemplateSummary]` | reviewer+ | — |
+| GET `/v1/review-templates` | List templates | → `list[TemplateSummary]` | reviewer+ | - |
 | POST `/v1/reviews` | Start a review; snapshots eligible revisions (`Idempotency-Key`) | `ReviewCreate` → 202 `ReviewAccepted{review_id, job_id, revision_ids, excluded_pending}` | reviewer+ | 409 if the vendor has no active revisions; a repeated key returns the original review |
 | GET `/v1/reviews/{id}` | Progress and snapshot | → `ReviewDetail` | reviewer+ | 404 |
 | GET `/v1/reviews/{id}/evidence` | Passages, verdicts, claims, provenance checks | → `ReviewEvidence` | reviewer+ | 404 |
@@ -401,11 +401,11 @@ The clean corpus has no injection. The injected variant replaces exactly one doc
 | Question | Expected `evidence_status` | Gold supporting passages | Trap |
 |---|---|---|---|
 | RET-01 Data retention after termination | `conflicting` | r2 "ninety (90) days"; DPA "thirty (30) days" | Citing the superseded 180-day text |
-| ENC-01 Encryption at rest | `missing` | — (only "TLS 1.2 in transit", "industry-standard encryption") | Inferring at-rest coverage; any Tenant B text |
+| ENC-01 Encryption at rest | `missing` | - (only "TLS 1.2 in transit", "industry-standard encryption") | Inferring at-rest coverage; any Tenant B text |
 | CMP-01 ISO 27001 certification | `vendor_claim` (requires documentary support, so a finding is raised) | Trust-center claim | Treating the vendor's claim as documentary support |
 | CMP-02 HIPAA compliance | `vendor_claim` | Trust-center claim | Same |
-| INC-01 Breach-notification timeframe | `missing` | — | The Tenant B 36-hour canary |
-| BCP-01 Recovery time objective (RTO) | `missing` | — (no answer in the corpus) | Answering at all |
+| INC-01 Breach-notification timeframe | `missing` | - | The Tenant B 36-hour canary |
+| BCP-01 Recovery time objective (RTO) | `missing` | - (no answer in the corpus) | Answering at all |
 | SUB-01 Subprocessors and regions | `vendor_claim` | Table rows | Table chunk kept intact |
 
 Ferrowick provides a `documentary_support` case: a SOC 2 letter labelled `third_party_report`, with authenticity `not_established`. Tenant B has its own mirrored ground truth.
