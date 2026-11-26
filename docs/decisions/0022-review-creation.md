@@ -194,7 +194,7 @@ Focused command (`test_reviews_postgres`, `test_review_creation`, `test_review_v
 `test_database_failures`, `test_persistence`, `test_readiness`, `test_packaging`): 298 passed, 28
 skipped (PostgreSQL). Full suite: 3635 passed, 339 skipped, 0 failed (337 PostgreSQL tests, one
 symbolic-link test and one POSIX-only signal test); collection 337 integration (one test replaced
-by three) and 3,637 non-integration tests (3,974). **PostgreSQL: not run** — the corrected and
+by three) and 3,637 non-integration tests (3,974). **PostgreSQL: not run** - the corrected and
 new database tests are written but unexecuted; local skips prove nothing about them. No build or
 installed-wheel check was repeated: production and packaging blobs are unchanged, and the passing
 `1bea3731` verify jobs remain the exact-commit evidence for that published version.

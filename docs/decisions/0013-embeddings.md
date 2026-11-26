@@ -73,7 +73,7 @@ billable token count.
    order; a zero norm gives 1024 zero coordinates. No built-in `hash`, random
    seed, environment read, network, downloaded model or SDK is used.
 
-All offline output is labelled **lexical-hash baseline — not semantic**.
+All offline output is labelled **lexical-hash baseline - not semantic**.
 Query/document vectors share the algorithm but retain their requested mode.
 Literal fingerprint and bucket/sign fixtures are calculated independently of
 the implementation. Tests cover repetition, opposite-sign collisions and

@@ -21,7 +21,7 @@ client -> API (FastAPI) -> PostgreSQL 17 + pgvector <- worker (jobs: ingest, ind
                                                           +-> model provider (off by default)
 ```
 
-Code lives in `apps/` (API, worker) and `packages/` (domain, persistence, retrieval, agents, observability). Decisions are recorded in [docs/decisions](docs/decisions), the original plan in [docs/plan.md](docs/plan.md), and the threat model in [docs/threat-model.md](docs/threat-model.md). Responsible-AI notes are in [docs/responsible-ai.md](docs/responsible-ai.md).
+Code lives in `apps/` (API, worker) and `packages/` (domain, persistence, retrieval, agents, observability). Decisions are recorded in [docs/decisions](docs/decisions), the original plan in [docs/plan.md](docs/plan.md), and the threat model in [docs/threat-model.md](docs/threat-model.md). The architecture is described in [docs/architecture.md](docs/architecture.md). Responsible-AI notes are in [docs/responsible-ai.md](docs/responsible-ai.md).
 
 ## Run it
 
@@ -29,11 +29,10 @@ Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), and PostgreSQL 17 w
 
 ```
 uv sync
-cp .env.example .env        # then set the database URL; use a local development database
 uv run pytest               # unit tests, no database needed
 ```
 
-Integration tests need a disposable database whose name ends in `_test`:
+Configuration is read from environment variables only (no `.env` file is loaded; see `.env.example` for the names). Integration tests need a disposable database whose name ends in `_test`:
 
 ```
 EG_TEST_DATABASE_URL=postgresql+psycopg://USER:PASSWORD@127.0.0.1:5432/evidenceguard_test \
