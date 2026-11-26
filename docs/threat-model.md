@@ -65,7 +65,6 @@ Only synthetic demonstration data is used.
 These are **domain invariants** in `evidenceguard_domain`, enforced by validation and pure functions and covered by unit tests:
 
 | Threat | Invariant |
-| Threat | Control |
 |---|---|
 | Evidence from one tenant appearing in another tenant's report | Citations, findings and report content must all carry the report's tenant ID; mixing tenants fails validation. |
 | An actor acting on another tenant's report | Every transition checks that the actor's tenant matches the report's tenant. |
@@ -84,7 +83,6 @@ These invariants hold only for code that goes through the domain models and tran
 
 ## API request handling
 | Threat | Mitigation |
-| Threat | Control |
 |---|---|
 | Submitted values, credentials or quotations leaking into logs | Records rendered by the configured JSON formatter carry only a fixed event identifier (from a reviewed template table; message text and arguments are never formatted) and allowlisted fields: request ID, method, route template, status, duration and exception class. Uvicorn's access log is off. Handlers configured outside `logging_config()` are not covered. |
 | Exception text or tracebacks leaking to clients or logs | Unexpected errors return a generic 500 problem. Logs record the exception class only, with no message and no traceback. |
@@ -97,7 +95,6 @@ The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-
 
 ## API-key authentication
 | Threat | Mitigation |
-| Threat | Control |
 |---|---|
 | A client choosing its own tenant, user or role | The principal is derived only from the stored key, user and tenant rows (the key joined to its user on `tenant_id` and `user_id`). `/v1/me` takes no parameters; tenant headers and query values are ignored. Tested with spoofed headers and query parameters. |
 | Stolen database contents revealing usable keys | Only the public prefix and the SHA-256 of a 256-bit random secret are stored. |
@@ -108,7 +105,6 @@ The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-
 
 ## Tenant-scoped vendors and readiness
 | Threat | Mitigation |
-| Threat | Control |
 |---|---|
 | Reading or creating another tenant's vendors | Every vendor query takes the authenticated `ActorContext` and filters by its tenant in SQL. A vendor is read by `(tenant_id, id)` together; the list and its count use the same filter. Create takes the tenant only from the key. Tested with spoofed headers, query parameters and body fields. |
 | Learning that another tenant's vendor exists | A foreign ID and a nonexistent ID return the same generic 404. Duplicate slugs are checked only within the caller's tenant. |
@@ -122,7 +118,6 @@ The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-
 
 ## Durable job core
 | Threat | Mitigation |
-| Threat | Control |
 |---|---|
 | Two workers processing one job | Claims take rows with `FOR UPDATE SKIP LOCKED` in one short transaction; a claimed row is running with one owner. |
 | A stale worker writing after its job was reclaimed | Every effect and transition runs in a fenced transaction: lock the job row, then re-check the `(job, worker, attempt)` token and an unexpired lease with fresh `clock_timestamp()` in a separate statement. `attempt` grows on every claim, so even the same worker ID cannot reuse an old attempt. |
@@ -134,7 +129,6 @@ The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-
 
 ## Worker runtime
 | Threat | Mitigation |
-| Threat | Control |
 |---|---|
 | A stale worker recording an outcome after losing its lease | Outcomes are written only through the fence, after both job threads are confirmed stopped. Lease loss (a refused heartbeat, a refused fenced write, or a passed local deadline) is latched irreversibly and suppresses every outcome. |
 | Two jobs, or a lingering thread and a new job, in one process | At most one handler runs at a time. After every bounded wait the runtime checks that the handler and heartbeat threads really stopped; otherwise it stops claiming for good and the CLI ends the process (exit 5). |
@@ -152,7 +146,6 @@ The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-
 ## Documents and revisions
 
 | Threat | Mitigation |
-| Threat | Control |
 |---|---|
 | A document or revision linked across tenants | Composite `(tenant_id, …)` foreign keys to vendors and documents; the active and successor pointers reference `(tenant_id, document_id, id)`, so they can only name a revision of the same tenant and document. Every query filters by the actor's or the job's tenant. |
 | A job naming another tenant's revision | The revision is looked up only in the job's tenant and is then not found; after the locks, the re-read job's tenant and the document's tenant must match, or the operation is refused before any write. |
@@ -166,7 +159,6 @@ The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-
 ## Document ingestion
 
 | Threat | Mitigation |
-| Threat | Control |
 |---|---|
 | Chunks linked across tenants or revisions | `chunk_sets` references the revision through `(tenant_id, revision_id)`; `chunks` references its set through `(tenant_id, revision_id, chunker_version)`; chunk IDs include the tenant and revision, so identical bytes in two tenants get disjoint IDs. |
 | A stale worker writing or activating chunks | Every write and the activation run in the job core fence, take the document and revision locks, then re-check ownership with fresh database time, and re-check again before the write commits. |
@@ -178,7 +170,6 @@ The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-
 
 ## Document API
 | Threat | Mitigation |
-| Threat | Control |
 |---|---|
 | Oversized or endless uploads | Caps on the streamed count, never on `Content-Length`: 2 MiB of file bytes, 2 MiB + 64 KiB in total, 8 parts, 8 KiB of headers per part, 1 KiB per text field. Reading stops at the first error; a declared length over the cap is refused before reading. The file is one bounded in-memory buffer and no temporary file is created. |
 | Reading a body before authorization | The route declares no body parameters; authentication, the role check and the vendor lookup finish before the first `receive`, which raw-ASGI tests assert. |
@@ -195,17 +186,11 @@ The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-
 **Limits** (ADR-0011): the reader depends on the verified behaviour of `python-multipart` 0.0.32, which an upgrade must re-verify. Per-byte header feeding costs CPU bounded by the header caps. The upload response is an observation that a worker may change at once. `stalled` revisions have no operator retry in v1.
 
 ## Containers
-- the effective build context excluded all 19 planted fixtures;
-- the runtime ran as UID/GID 10001;
-- the application containers ran the CI-built image;
-- the smoke passed, including its key-in-service-logs check and the idle-worker exit check;
-- cleanup verified ownership.
+
+The CI container job builds the image, checks the effective build context and runs a Compose smoke test. Controls:
 
 | Threat | Mitigation |
-| Threat | Control |
 |---|---|
-| Secrets or artifacts entering the image | The build context is an allowlist with recursive re-exclusions (`.env*`, `.git`, `.local`, virtual environments, caches, build outputs, keys). CI is to verify the effective context with planted nested fixtures. The runtime image holds only the virtual environment and `alembic.ini`, with no build arguments or baked-in configuration. |
-| A substituted or unexpected image | Base images and the database image are pinned by digest. Application services never pull (`pull_policy: never`), and CI is to check that every application container runs the CI-built image ID. |
 | Excess privilege in containers | UID/GID 10001; root-owned files the runtime user cannot modify; a read-only root filesystem with a `/tmp` tmpfs; all capabilities dropped; `no-new-privileges`; an init process. |
 | Exposure on the network | Host ports bind `127.0.0.1` only (API 8000, database 5433). |
 | Migration races | Only the one-shot `migrate` service migrates; the API and worker start after it succeeds. |
@@ -215,12 +200,8 @@ The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-
 **Limits** (ADR-0012): the database credentials are disposable and public. Stopping the worker has an external 60 s budget, not a guaranteed shutdown bound (ADR-0008). The smoke stops an idle worker only. Cleanup can be prevented by runner loss. The uv builder-tool image is used under a narrowly approved exception to the two-week age policy, for its exact digest only (no runtime uv; no change to the Python base or the general policy). The exception does not claim age compliance or general safety. There is no production deployment.
 
 ## Revision indexing
-specification ([ADR-0015](decisions/0015-revision-indexing.md)). The complete corrected implementation
-
-neither Codex nor the reviewer ran those checks.
 
 | Threat | Mitigation |
-| Threat | Control |
 |---|---|
 | Indexing another tenant's revision | The tenant comes only from the validated actor (enqueue/backfill) or the job (handler). Every selection, enqueue and read is tenant-scoped, and the composite keys back this in the database. |
 | Unauthorized or unbounded operator action | `eg-admin backfill-indexes` follows the existing trusted-operator model, with no API endpoint. It processes one bounded page (limit 1–100) per invocation, never retries or resets a terminal job, and prints only fixed outcome counts and the cursor. |
@@ -251,7 +232,7 @@ A test-only retrieval evaluation runs over a fictional synthetic corpus (`sample
 
 ## Voyage embedding adapter
 
-The embedding adapter for the Voyage service exists and is exercised against a fake transport; no live provider call has been made. Controls:
+The embedding adapter for the Voyage service exists and is exercised against a fake transport; no live provider call has been made.
 
 **Timing is cooperative, not a hard deadline:** a 10 s connect timeout, a 30 s socket I/O
 timeout per blocking wait and a 60 s elapsed-time budget checked before and after each phase.
