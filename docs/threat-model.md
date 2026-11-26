@@ -1,6 +1,58 @@
-# Threat model (initial draft, M1c)
+# Threat model
 
-**Status:** draft. This document grows with each milestone and must be complete before v0.1 ([plan](plan.md) correction F). It describes the planned system; most of it is **not implemented yet**.
+## v0.1 summary
+
+This summary describes the system as it is in v0.1. The sections after it are the detailed record
+for each component, written as each part was built; their headings name the milestone in which
+that part was added, and where their wording about what is or is not implemented differs from
+this summary, this summary is current. How the parts fit together:
+[architecture.md](architecture.md).
+
+**Trust boundaries.**
+
+- **API clients** are authenticated by bearer API keys; only the key prefix and the SHA-256 of
+  its secret are stored. The tenant, user and role come from the stored key, never from the
+  request (`apps/api/evidenceguard_api/auth.py`).
+- **Uploaded documents are untrusted.** Uploads are size-bounded and strictly decoded
+  (`apps/api/evidenceguard_api/uploads.py`). Document text reaches a model only as JSON data,
+  and the prompts instruct the model to treat it as content, never as instructions.
+- **Model output is untrusted.** Replies are schema-validated and every quotation is matched
+  against the passages retrieved for that question before anything is stored
+  (`packages/domain/evidenceguard_domain/provenance.py`).
+- **The model provider** is an external service reached only by the worker, only when a deployer
+  enables reviews (`EG_REVIEW_PROVIDER`, `EG_REVIEW_MODEL`; off by default). The provider key
+  `EG_ANTHROPIC_API_KEY` is read by the worker only; the API never reads it and never calls a
+  model (`apps/worker/evidenceguard_worker/review_wiring.py`).
+- **The database** is trusted. The application enforces tenancy with composite tenant keys and
+  tenant-filtered queries; PostgreSQL row-level security is not used.
+
+**Roles.** `reviewer` and `approver` may use vendors, documents, reviews and reports; only
+`approver` may approve, reject or finalize, and never a revision they authored; `admin` manages
+keys and is refused on those routes (`packages/domain/evidenceguard_domain/context.py`).
+
+**Model outputs are advisory.** A review produces a draft. Export requires a finalized report,
+finalizing requires an approval, and an approval binds one exact revision number and SHA-256
+(the approval gate, [ADR-0028](decisions/0028-approval-gate-and-export.md),
+`apps/api/evidenceguard_api/reports.py`). See [responsible-ai.md](responsible-ai.md).
+
+**Not measured.** No live evaluation has been run and no model has been chosen. There are no
+quality figures, and prompt-injection resistance has not been measured.
+
+**Data handling.** The repository holds synthetic data only. Document text is sent to a model
+provider only when a deployer enables reviews, and only from the worker. Logs carry reviewed
+event names and allowlisted fields, never document text, prompts, replies or keys.
+
+**Known limits in v0.1.**
+
+- Append-only protection of report history and audit rows is a database trigger that a table
+  owner or superuser can disable; it holds only while the runtime role does not own the tables,
+  which nothing in the repository enforces.
+- No request rate limiting, lockout or key expiry. Reviews have a per-tenant cap on jobs queued
+  or running (`EG_REVIEW_MAX_IN_FLIGHT`), which bounds concurrency, not spend.
+- A GET on a report can write (the first access creates revision 1).
+- Exports are not signed; their digest can be compared with the audit row.
+- No TLS, secrets manager or production deployment; the Compose stack is for development.
+- Provenance is checked, semantic support is not; document authenticity is never established.
 
 ## Scope and assets
 

@@ -1,14 +1,43 @@
-# Responsible AI (initial draft, M1b)
+# Responsible AI (v0.1)
 
-**Status:** draft. This document must be complete before v0.1 ([plan](plan.md) correction F). No model is called by the code yet.
+This page states what the model does in EvidenceGuard, what a person must still decide, what has
+and has not been measured, and how document data is handled.
 
 ## Purpose and limits
 
-EvidenceGuard is **decision support** for vendor-risk reviewers. It is not legal advice, and it does not certify compliance.
+EvidenceGuard is **decision support** for vendor-risk reviewers. It is not legal advice, and it
+does not certify compliance.
 
-- A report organizes what the uploaded documents say, with citations, and flags conflicts and gaps for a human to judge.
-- **Human approval does not establish that documents are authentic, and it does not certify the vendor as compliant.** It records that a named approver accepted one exact revision of the report's content.
-- Every citation carries `authenticity: not_established`. A document labelled `third_party_report` is described as documentary support, never as independently verified.
+- A report organizes what the uploaded documents say, with citations, and flags conflicts and
+  gaps for a human to judge.
+- **Human approval does not establish that documents are authentic, and it does not certify the
+  vendor as compliant.** It records that a named approver accepted one exact revision of the
+  report.
+- Every citation carries `authenticity: not_established`. A document labelled
+  `third_party_report` is described as documentary support, never as independently verified.
+
+## Model outputs are advisory and need human approval
+
+Model output never leaves the system as a decision on its own:
+
+- The model answers through two stages per question, a Verifier and a Risk Analyst
+  (`packages/agents/evidenceguard_agents/data/prompts/`). Their replies are schema-validated,
+  every quotation must occur in a passage retrieved for that question, and the evidence status
+  is derived by code from the verdict and the cited source types, not taken from the model
+  (`packages/domain/evidenceguard_domain/provenance.py`). A reply that fails these checks leaves
+  the question unresolved rather than guessed.
+- The review output is a draft. A reviewer records a disposition for each finding (`open`,
+  `accepted` or `dismissed` with a note) in a new revision; the machine findings themselves are
+  never edited (`packages/domain/evidenceguard_domain/review_report_approval.py`).
+- **The approval gate:** only a user with the approver role can approve or reject, never on a
+  revision they authored, and only for the exact current revision number and its SHA-256. Any
+  new revision removes the effective approval. Finalizing needs an approval of the current
+  revision, and only a finalized report can be exported (`POST /v1/reports/{id}/approval`,
+  `/finalize` and `GET /export` in `apps/api/evidenceguard_api/reports.py`;
+  [ADR-0028](decisions/0028-approval-gate-and-export.md)).
+- Every export carries a fixed disclaimer that it is AI-assisted, that citations show provenance
+  only, and that it is not legal advice or certification
+  (`packages/agents/evidenceguard_agents/report_export.py`, `EXPORT_DISCLAIMER`).
 
 ## What the evidence labels mean
 
@@ -19,22 +48,38 @@ EvidenceGuard is **decision support** for vendor-risk reviewers. It is not legal
 | `conflicting` | Current documents appear to disagree. At least two distinct quotations are cited; they may come from the same passage. | Which one is right, or that the quotations truly contradict each other. The quotation count is a structural check only. |
 | `missing` | No sufficient evidence was found. Partial passages may still be cited. | That the vendor lacks the control. |
 
-**No question is silently dropped.** Every question in a report is either answered by a finding or listed as unresolved:
-- A `missing` finding leaves every question it names unresolved, even when other evidence partly supports that question.
-- A vendor claim cannot settle a question that requires documentary support. It is still shown, and the question stays unresolved.
+**No question is silently dropped.** Every question in a report is either answered by a finding
+or listed as unresolved. A `missing` finding leaves every question it names unresolved, and a
+vendor claim cannot settle a question that requires documentary support.
 
-## Implemented and tested now (M1b)
+## Evaluation status
 
-- The status and citation rules above are enforced when results are built.
-- A finding cannot claim support or conflict without citations.
-- Reports can only be finalized and exported after an approver approves the exact current revision. Any edit after approval requires a new approval.
-- A rejection must state its reason.
-- Retried decisions never overwrite the record of who decided what: a changed retry is refused as a conflict.
+- No live evaluation has been run.
+- No model has been chosen. `EG_REVIEW_MODEL` is set by whoever deploys it.
+- There are no quality, cost or latency figures, and none should be inferred from the test
+  suite. The tests use scripted providers and a mocked transport; they check contracts and
+  failure handling, not answer quality.
+- Prompt-injection resistance has not been measured. Document text is passed to the model as
+  JSON data and the prompts tell the model to treat it as content only; that reduces the risk
+  but does not remove it.
 
-## Pending
+## Data handling
 
-- **Semantic validation.** Citation checks will prove provenance (the quote exists in an authorized document), not that the passage supports the claim. Support will be judged by the model and measured against human labels (M5–M7).
-- **Prompt-injection evaluation.** Planned with paired clean and injected document sets (M7). Defences will reduce, not remove, the risk.
-- **Model refusals and invalid output** will leave questions unresolved rather than guessed (M5).
-- **Evaluation independence.** Human labels are the reference standard; the system's own judgments are never counted as evaluation results (M7).
-- **Data.** Only synthetic, fictional vendors and tenants are used. No real client or personal data belongs in this repository.
+- The repository contains synthetic data only: fictional tenants, vendors and documents in
+  `sample_data/` and in the tests. No real client, vendor or personal data belongs here.
+- Uploaded document text stays in the deployer's PostgreSQL database. It is sent to a model
+  provider only when a deployer enables reviews (`EG_REVIEW_PROVIDER`, `EG_REVIEW_MODEL` and a
+  worker-only `EG_ANTHROPIC_API_KEY`; reviews are off by default), and then only the passages
+  retrieved for each question, from the worker process.
+- Logs carry fixed event names and allowlisted fields, never document text, prompts, model
+  replies or keys (`packages/observability/evidenceguard_observability/jsonlog.py`).
+
+## Limitations
+
+- Provenance is checked, support is not: code proves that a quotation occurs in a retrieved
+  passage, not that the passage supports the claim. That is the reviewer's judgment.
+- Retrieval uses an offline word-hashing embedding, a lexical baseline rather than a semantic
+  model, so relevant passages phrased differently from the question can be missed.
+- Model refusals, timeouts and invalid output leave questions unresolved; they are not retried
+  without bound.
+- See [threat-model.md](threat-model.md) for security limits.
