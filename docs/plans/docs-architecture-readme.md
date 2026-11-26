@@ -82,14 +82,14 @@ failing.
 - The evaluation harness and `docs/evaluation.md` (separate pull request). The README refers
   to `docs/evaluation.md` as the place the harness is described once that pull request merges.
 
-## Changes from the plan
+## Changes from the plan (2026-11-26)
 
 - The README was not fully rewritten in this change. The public repository already carries a short
   README written for a first-time reader; this change adds the architecture link to it. The
   local-run commands in it were not executed end to end.
-- Em dashes were also removed from `docs/plan.md` and two decision records, so the honesty test
-  could cover every reader-facing page.
-- The threat model keeps its v0.1 summary and per-component control tables. Dated build history
+- Em dashes were also removed from `docs/plan.md` and two decision records, for consistency with the
+  rest of the documentation (the honesty test skips those pages).
+- The threat model keeps its v0.1 summary and per-component control tables. Dated build history, the per-milestone review-workflow narrative
   and status prose were removed from it.
 - Plan author: planner agent (Claude Opus 5.5). The base named earlier (288d418) belongs to the
   development repository, not this one.
