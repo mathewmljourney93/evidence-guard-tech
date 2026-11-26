@@ -59,8 +59,6 @@ Tests cover unit, PostgreSQL integration, installed-wheel and container checks. 
 
 Evaluation: see [docs/evaluation.md](docs/evaluation.md).
 
-No live evaluation has been run and no model has been selected.
-
 ## Limits
 
 - No live model has been run, no model has been selected, and there are no quality, cost or latency figures.
