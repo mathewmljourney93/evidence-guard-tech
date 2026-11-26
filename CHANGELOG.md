@@ -4,6 +4,11 @@ Short record of merged changes, newest first. Details live in each pull request.
 
 ## Unreleased
 
+- `eg-eval` evaluation harness (ADR-0029): a contract suite in CI that uses a scripted fake provider
+  (it checks pipeline behaviour and is NOT a quality measurement), a budget-guarded live suite and
+  reports. No live evaluation has been run and no model is chosen: the owner's spend cap is $0, so
+  `selection.toml` has `total_usd_cap = 0.0` and the live suite refuses at preflight.
+
 - Architecture guide, v0.1 threat-model summary and responsible-AI statement; a test keeps
   reader-facing pages free of status and result claims.
 - M6: report approval gate and export under `/v1/reports` (hash-bound revisions, approve or
