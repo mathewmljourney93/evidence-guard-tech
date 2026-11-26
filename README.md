@@ -56,6 +56,12 @@ Model-backed reviews are off unless `EG_REVIEW_PROVIDER` and `EG_REVIEW_MODEL` a
 
 Tests cover unit, PostgreSQL integration, installed-wheel and container checks. GitHub Actions runs them on Ubuntu and Windows plus a secret scan.
 
+## Evaluation
+
+Evaluation: see [docs/evaluation.md](docs/evaluation.md).
+
+No live evaluation has been run and no model has been selected.
+
 ## Limits
 
 - No live model has been run, no model has been selected, and there are no quality, cost or latency figures.
