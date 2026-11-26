@@ -24,7 +24,7 @@ flowchart LR
     model["Model provider<br/>(Anthropic, only when enabled)"]
     eg_admin["eg-admin<br/>seed, keys, index backfill"]
 
-    client -->|HTTPS or local HTTP| routes
+    client -->|HTTP| routes
     routes -->|reads, writes, enqueues jobs| db
     runtime -->|claims jobs SKIP LOCKED| db
     handlers -->|fenced writes| db
@@ -50,8 +50,7 @@ enforces the import rules.
 
 A retrieval evaluation over the synthetic corpus in `sample_data/` exists as test-only code
 (`apps/worker/evidenceguard_worker/evaluation.py`, [ADR-0017](decisions/0017-retrieval-evaluation.md));
-it has no installed command. The evaluation harness for the review path is described in
-[docs/evaluation.md](evaluation.md) once that change is merged.
+it has no installed command. No live evaluation of the review path has been run.
 
 ## The review pipeline, end to end
 
@@ -195,7 +194,7 @@ gracefully on SIGINT or SIGTERM ([ADR-0008](decisions/0008-worker-runtime.md)). 
   secret are stored (`persistence/credentials.py`, [ADR-0005](decisions/0005-api-key-authentication.md)).
   `eg-admin create-key` prints a key once.
 - **Roles** (`domain/context.py`): `reviewer` and `approver` may use vendors, documents,
-  reviews and reports; only `approver` may approve, reject or finalize; `admin` manages keys
+  reviews and reports; only `approver` may approve, reject or finalize; `admin` is an operator role with no access to those routes (keys are managed with the `eg-admin` command)
   and gets 403 on these routes. There is no admin bypass.
 - **Model provider key.** `EG_ANTHROPIC_API_KEY` is read by the worker only
   (`worker/review_wiring.py`). The API never reads it and never calls a model.

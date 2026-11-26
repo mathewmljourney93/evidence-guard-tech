@@ -4,8 +4,8 @@ Short record of merged changes, newest first. Details live in each pull request.
 
 ## Unreleased
 
-- Architecture guide, v0.1 threat-model summary and responsible-AI statement; a test keeps reader-facing pages free of status and result claims.
-
+- Architecture guide, v0.1 threat-model summary and responsible-AI statement; a test keeps
+  reader-facing pages free of status and result claims.
 - M6: report approval gate and export under `/v1/reports` (hash-bound revisions, approve or
   reject, finalize, Markdown and JSON export, append-only history and audit; migration 0009,
   ADR-0028).

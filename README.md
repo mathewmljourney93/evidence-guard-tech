@@ -29,11 +29,10 @@ Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), and PostgreSQL 17 w
 
 ```
 uv sync
-cp .env.example .env        # then set the database URL; use a local development database
 uv run pytest               # unit tests, no database needed
 ```
 
-Integration tests need a disposable database whose name ends in `_test`:
+Configuration is read from environment variables only (no `.env` file is loaded; see `.env.example` for the names). Integration tests need a disposable database whose name ends in `_test`:
 
 ```
 EG_TEST_DATABASE_URL=postgresql+psycopg://USER:PASSWORD@127.0.0.1:5432/evidenceguard_test \

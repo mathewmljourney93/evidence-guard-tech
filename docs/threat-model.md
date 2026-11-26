@@ -27,8 +27,7 @@ this summary, this summary is current. How the parts fit together:
   tenant-filtered queries; PostgreSQL row-level security is not used.
 
 **Roles.** `reviewer` and `approver` may use vendors, documents, reviews and reports; only
-`approver` may approve, reject or finalize, and never a revision they authored; `admin` manages
-keys and is refused on those routes (`packages/domain/evidenceguard_domain/context.py`).
+`approver` may approve, reject or finalize, and never a revision they authored; `admin` is an operator role that is refused on those routes (`packages/domain/evidenceguard_domain/context.py`).
 
 **Model outputs are advisory.** A review produces a draft. Export requires a finalized report,
 finalizing requires an approval, and an approval binds one exact revision number and SHA-256
@@ -63,8 +62,7 @@ EvidenceGuard helps a reviewer draft a vendor-risk report from uploaded vendor d
 
 Only synthetic demonstration data is used.
 
-## What is implemented and tested now (M1b)
-
+## What is implemented and tested now
 These are **domain invariants** in `evidenceguard_domain`, enforced by validation and pure functions and covered by unit tests:
 
 | Threat | Invariant |
@@ -84,8 +82,7 @@ These are **domain invariants** in `evidenceguard_domain`, enforced by validatio
 
 These invariants hold only for code that goes through the domain models and transitions. Pydantic's `model_construct` and `object.__setattr__` can bypass validation; domain code never uses them.
 
-## API request handling (M1c, implemented and tested)
-
+## API request handling
 | Threat | Mitigation |
 |---|---|
 | Submitted values, credentials or quotations leaking into logs | Records rendered by the configured JSON formatter carry only a fixed event identifier (from a reviewed template table; message text and arguments are never formatted) and allowlisted fields: request ID, method, route template, status, duration and exception class. Uvicorn's access log is off. Handlers configured outside `logging_config()` are not covered. |
@@ -97,8 +94,7 @@ These invariants hold only for code that goes through the domain models and tran
 
 The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-and-errors.md). A client-chosen extra field *name* can still appear, capped, in a 422 body.
 
-## API-key authentication (M2b, verified in CI and on `main`)
-
+## API-key authentication
 | Threat | Mitigation |
 |---|---|
 | A client choosing its own tenant, user or role | The principal is derived only from the stored key, user and tenant rows (the key joined to its user on `tenant_id` and `user_id`). `/v1/me` takes no parameters; tenant headers and query values are ignored. Tested with spoofed headers and query parameters. |
@@ -108,15 +104,7 @@ The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-
 | A revoked key or demoted user keeping access | No caching: each request reads the current revocation state and role. Tested with role changes and revocation. |
 | Database or configuration errors leaking details | They return a generic 503 with no URL, exception text or credential. |
 
-**Limits** (ADR-0005):
-- **Possession is access:** there is no second factor, expiry, scopes or rotation schedule.
-- **No rate limiting or lockout.**
-- **Residual timing:** the database lookup can take different time for known and unknown prefixes; prefixes are not secret.
-- **Transport:** keys are bearer tokens, so non-local deployments need TLS in front.
-- **Verification:** at commit `b2f7f23` on `feat/api-key-authentication`, the [integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38166627885/job/114550418432) passed with all fifteen PostgreSQL tests (`15 passed, 377 deselected`). M2b was then fast-forwarded onto `main` at `277dfea`, where the [integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38167398488/job/114552700841) passed again (`15 passed, 377 deselected in 3.77s`). Compose has never been run.
-
-## Tenant-scoped vendors and readiness (M2c, verified in CI and on `main`)
-
+## Tenant-scoped vendors and readiness
 | Threat | Mitigation |
 |---|---|
 | Reading or creating another tenant's vendors | Every vendor query takes the authenticated `ActorContext` and filters by its tenant in SQL. A vendor is read by `(tenant_id, id)` together; the list and its count use the same filter. Create takes the tenant only from the key. Tested with spoofed headers, query parameters and body fields. |
@@ -129,10 +117,7 @@ The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-
 
 **Limits** (ADR-0006): offset pagination is not a snapshot; readiness checks connectivity and revisions only; `/readyz` is unauthenticated; the API-key limits above still apply.
 
-**Verification:** at commit `a888b6c` on `feat/vendor-api-readiness`, the [integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38212619855/job/114689994147) passed with all twenty-one PostgreSQL tests, including M2c's six (`21 passed, 458 deselected in 4.65s`, from the log retrieved by the external reviewer). M2c was then fast-forwarded onto `main` at `9d5a93a`, where the [integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38214711868/job/114696647728) passed again (`21 passed, 458 deselected in 4.92s`). Compose has never been run.
-
-## Durable job core (M3a, verified in CI and on `main`)
-
+## Durable job core
 | Threat | Mitigation |
 |---|---|
 | Two workers processing one job | Claims take rows with `FOR UPDATE SKIP LOCKED` in one short transaction; a claimed row is running with one owner. |
@@ -145,10 +130,7 @@ The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-
 
 **Limits** (ADR-0007): handlers are trusted code, and the fence assumes they preserve its transaction and lock. `execute` accepts arbitrary SQL and Python exposes the underlying objects, so a handler that issued transaction-control SQL, used the underlying connection or edited ownership fields could defeat the fence. A fenced transaction that passed its check just before expiry may commit shortly after the lease expires; the database enforces only that the payload is a JSON object, not the finer payload rules or the byte cap; at the M3a and M3b baselines the worker had no production handlers (M3d, on `main` since `cdf7260`, registers `ingest_revision`). Passing tests demonstrate the tested behaviour, not a general security or performance guarantee.
 
-**Verification:** at commit `11350e1` on `feat/durable-job-core`, the [integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38240768344/job/114782517485) passed with all 63 PostgreSQL tests (`63 passed, 605 deselected in 16.58s`, from the log retrieved by the external reviewer). They include M3a's concurrent-claim, stale-worker, lease-fencing, lock-wait and lock-timeout tests. M3a was then fast-forwarded onto `main` at `b3f9845`, where the [integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38242144844/job/114787118281) passed again (`63 passed, 605 deselected in 16.17s`). The M3b worker is now on `main` (see below), and Compose has never been run.
-
-## Worker runtime (M3b, verified in CI and on `main`)
-
+## Worker runtime
 | Threat | Mitigation |
 |---|---|
 | A stale worker recording an outcome after losing its lease | Outcomes are written only through the fence, after both job threads are confirmed stopped. Lease loss (a refused heartbeat, a refused fenced write, or a passed local deadline) is latched irreversibly and suppresses every outcome. |
@@ -164,10 +146,7 @@ The full design and limits are in [ADR-0002](decisions/0002-request-ids-logging-
 
 **Limits** (ADR-0008): execution is at least once, so durable effects must be fenced and idempotent, and effects outside the database can repeat. Cancellation is cooperative: Python cannot stop a running thread. `claim` and outcome recording are synchronous and there is no worker statement timeout, so there is **no total shutdown deadline** and a hung call may need external termination. Engine disposal does not cancel checked-out connections; PostgreSQL rolls back a dead worker's transaction only when it detects the disconnect. Reclaim can be delayed by a late heartbeat or a lingering transaction. Handlers are trusted code; the handler wrapper is not a sandbox. At the M3b baseline there were no production handlers.
 
-**Verification:** at commit `bc5f638` on `feat/worker-runtime`, [CI run 38253962690](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38253962690) passed on [Ubuntu](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38253962690/job/114827089007) (`709 passed, 77 skipped in 15.96s`) and [Windows](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38253962690/job/114827088937) (`708 passed, 78 skipped in 22.18s`). The [integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38253962690/job/114827089078) passed with all 77 PostgreSQL tests (`77 passed, 709 deselected in 19.63s`): M3a's 63 and the worker's 14, including lease loss before a fenced write, heartbeats racing atomic completion, and shutdown re-queueing. All counts are from logs retrieved by the external reviewer. M3b was then fast-forwarded onto `main` at `dd26c70`, where the [integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38255786860/job/114833375219) passed again (`77 passed, 709 deselected in 17.36s`). These results demonstrate the tested behaviour, not a general security or performance guarantee. At that baseline there were no production handlers, and Compose has never been run.
-
-## Documents and revisions (M3c, verified in CI and on `main`)
-
+## Documents and revisions
 Reviewed and verified in CI on branch `feat/document-revisions` at commit `8646b75`, then fast-forwarded onto `main` at `6f8ffde`, where CI passed again. The mitigations below were exercised by M3c's PostgreSQL integration tests: constraints, migration, concurrency, activation and lease loss.
 
 | Threat | Mitigation |
@@ -181,12 +160,7 @@ Reviewed and verified in CI on branch `feat/document-revisions` at commit `8646b
 | Document text leaking through errors or logs | Content types have fixed messages and a content-free `repr`; snapshots and revision reads exclude the text; M3c logs nothing. |
 | Concurrent uploads allocating the same number | Numbers are allocated under the document row lock; unique constraints back this up and map to a fixed error. |
 
-**Limits** (ADR-0009): the re-check is not atomic with the commit (the M3a limit). Revision failure and job failure are separate commits. A `dead` job can leave its revision unsettled until M3d/M3e add reconciliation or a projection, which is required before overall M3 acceptance. At the M3c baseline (`6f8ffde`) there was no production handler, upload or endpoint, and document text is untrusted input for later milestones.
-
-**Verification:** at commit `8646b75` on `feat/document-revisions`, [CI run 38284929219](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38284929219) passed on [Ubuntu](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38284929219/job/114930898138) (`819 passed, 133 skipped in 18.75s`) and [Windows](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38284929219/job/114930898065) (`818 passed, 134 skipped in 23.07s`). The [integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38284929219/job/114930897691) passed all 133 PostgreSQL tests (`133 passed, 819 deselected in 36.46s`): the 77 existing ones and the 56 added by M3c, including cross-tenant references, the one-active index, concurrent creation and activation, rollback after demotion, stale attempts, lease expiry during a lock wait and the lock timeout. The [full-history secret scan](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38284929225) passed (29 commits scanned, no leaks found). M3c was then fast-forwarded onto `main` at `6f8ffde`, where the [integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38286702295/job/114936682399) passed again (`133 passed, 819 deselected in 38.29s`) and the [secret scan](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38286702205) passed (30 commits scanned, no leaks found). All counts are from logs retrieved by the external reviewer. These results demonstrate the tested behaviour, not a general security or performance guarantee. There was no production ingestion handler on the M3c `main` baseline `6f8ffde` (M3d, on `main` since `cdf7260`, registers `ingest_revision`; see below), and Compose has never been run.
-
-## Document ingestion (M3d, verified in CI and on `main`)
-
+## Document ingestion
 Reviewed and verified in CI at `74904e6` on `feat/document-ingestion`, then on `main` at `cdf7260`. The mitigations below are covered by the database-independent tests and by the PostgreSQL integration suite, which passed in full in CI.
 
 | Threat | Mitigation |
@@ -200,14 +174,7 @@ Reviewed and verified in CI at `74904e6` on `feat/document-ingestion`, then on `
 | Document text leaking through errors or logs | Chunk and source values have content-free `repr`s; parser and store errors have fixed messages; the handler logs nothing. |
 | Pathological input exhausting resources | At most 4,096 chunks per revision, 4,000 code points per chunk, and bounded write batches. These are initial defaults, not measured limits; there is no upload size limit until M3e. |
 
-**Limits** (ADR-0010): the digest-only completeness check relies on the application's write-once invariant and does not protect against privileged direct database modification; there are no triggers. A `dead` job can still leave a revision unsettled until the M3e projection, which is required before overall M3 acceptance. The parser is a small grammar, not a Markdown renderer, and chunk text remains untrusted input for later slices.
-
-**Verification:** It was verified in CI on `feat/document-ingestion` at `74904e6` ([CI run 38699149482](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38699149482)). From logs retrieved by the external reviewer: [Ubuntu](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38699149482/job/116302837532) `1020 passed, 178 skipped in 20.13s`, [Windows](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38699149482/job/116302837727) `1019 passed, 179 skipped in 23.75s`, and the [PostgreSQL integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38699149482/job/116302837038) `178 passed, 1020 deselected in 51.89s`: the full suite, including M3d's 45 new tests. The [full-history secret scan](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38699149417) passed ([job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38699149417/job/116302836923): 33 commits scanned, no leaks found). M3d was then fast-forwarded onto `main` at `cdf7260` (`cdf7260d02b8af9affb369cc805d666be61f9ac0`, adding only documentation after `74904e6`), where [CI run 38701376504](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38701376504) passed again. From logs retrieved by the external reviewer: [Ubuntu](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38701376504/job/116310119787) `1020 passed, 178 skipped in 19.71s`, [Windows](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38701376504/job/116310119664) `1019 passed, 179 skipped in 16.16s`, and the [PostgreSQL integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38701376504/job/116310119317) `178 passed, 1020 deselected in 53.28s`. The [full-history secret scan](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38701376501) passed ([job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38701376501/job/116310119403): 34 commits scanned, no leaks found). Both runs were push-triggered on `main`; the reviewer did not run the suite locally. These results demonstrate the tested behaviour, not a performance benchmark or a general security guarantee. At that baseline, upload and document endpoints were not implemented; Compose has never been run.
-
-## Document API (M3e, verified in CI and on `main`)
-
-The [secret scan](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38755179509) passed (37 commits scanned, no leaks found). It was then published on `main` at `2e605e7`, where [CI run 38758727669](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38758727669) passed again (Ubuntu, Windows and the 204-test PostgreSQL suite, per job logs retrieved by the external reviewer); the secret scan passed there too (38 commits scanned, no leaks found). These results demonstrate the tested behaviour, not a general security or performance guarantee.
-
+## Document API
 | Threat | Mitigation |
 |---|---|
 | Oversized or endless uploads | Caps on the streamed count, never on `Content-Length`: 2 MiB of file bytes, 2 MiB + 64 KiB in total, 8 parts, 8 KiB of headers per part, 1 KiB per text field. Reading stops at the first error; a declared length over the cap is refused before reading. The file is one bounded in-memory buffer and no temporary file is created. |
@@ -224,16 +191,12 @@ The [secret scan](https://github.com/mathewmljourney93/evidenceguard-agentic-rag
 
 **Limits** (ADR-0011): the reader depends on the verified behaviour of `python-multipart` 0.0.32, which an upgrade must re-verify. Per-byte header feeding costs CPU bounded by the header caps. The upload response is an observation that a worker may change at once. `stalled` revisions have no operator retry in v1.
 
-## Containers (M3f, verified in CI and on `main`)
-
-Ubuntu, Windows, the 204-test PostgreSQL suite and the container job (image build, effective build context, image checks, Compose smoke and cleanup) passed, per job logs retrieved by the external reviewer; it was then published on `main` at `e2463cb`, where the same checks passed again ([ADR-0012](decisions/0012-containers.md)). In that run, the container job checked these mitigations in a real container:
+## Containers
 - the effective build context excluded all 19 planted fixtures;
 - the runtime ran as UID/GID 10001;
 - the application containers ran the CI-built image;
 - the smoke passed, including its key-in-service-logs check and the idle-worker exit check;
 - cleanup verified ownership.
-
-Local Compose is unverified. It is a development stack only, with no production-readiness or general security guarantee; the acceptance of overall M3 at external review does not change that.
 
 | Threat | Mitigation |
 |---|---|
@@ -247,38 +210,10 @@ Local Compose is unverified. It is a development stack only, with no production-
 
 **Limits** (ADR-0012): the database credentials are disposable and public. Stopping the worker has an external 60 s budget, not a guaranteed shutdown bound (ADR-0008). The smoke stops an idle worker only. Cleanup can be prevented by runner loss. The uv builder-tool image is used under a narrowly approved exception to the two-week age policy, for its exact digest only (no runtime uv; no change to the Python base or the general policy). The exception does not claim age compliance or general safety. There is no production deployment.
 
-## Revision indexing (M4c, verified in CI and on `main`)
-
+## Revision indexing
 specification ([ADR-0015](decisions/0015-revision-indexing.md)). The complete corrected implementation
 
-`76fa5a3`**. Earlier feature-branch verification at `600a366` is historical. Historical local checks: Claude Code ran the new wheel script
-
 neither Codex nor the reviewer ran those checks.
-
-CI-verified paths, first at `600a366` and again in the main push at `76fa5a3` (logs independently
-retrieved by the external reviewer; see the
-main CI evidence):
-- all 18 PostgreSQL indexing cases, covering tenant-scoped enqueue and backfill, concurrent
-  enqueue, stalled and conflict reporting, atomic readiness with job success, committed-row reuse,
-  a competing writer, and lease loss and cancellation while the provider blocks, passed with the
-  other 233 integration tests;
-- the installed wheel on Ubuntu and Windows executed the offline embedding and canonical storage
-  path and imported the indexing modules (no database; it does not establish indexing by itself);
-- the container smoke ran the production `eg-admin backfill-indexes` command and worker indexing
-  path, gating matching tenant, revision and offline profile, canonical-job success, index
-  readiness, matching embedding and chunk counts, and the absence of the API key from service
-  logs. Raw database rows and the generated key were not emitted or independently inspected.
-
-These results cover the exercised paths only; they are not a production-readiness or general
-security guarantee. M4d has since been verified in CI and on `main` at `cf2b5743` (below); M4e's
-specification is accepted and its implementation is accepted at external review for
-
-green (historical; below); the corrected version, verified in feature-branch CI at `d1dcdfce`
-(historical), is reviewed, verified in CI and on `main` at `0ae4c6ca` (see
-evidence); the
-M4f specification
-the acceptance adds no new mitigation or security guarantee.
-Local Compose remains unverified.
 
 | Threat | Mitigation |
 |---|---|
@@ -296,22 +231,11 @@ re-verified against provider output, and provider calls are not exactly-once. A 
 automatically. The container smoke covers idle-worker shutdown only. The offline provider is a
 lexical-hash baseline with no semantic-quality claim, and no live provider was verified.
 
-## Snapshot retrieval (M4d, verified in CI and on main)
-
+## Snapshot retrieval
 The M4d specification
 
 ([ADR-0016](decisions/0016-snapshot-retrieval.md)); the correction preserves process-control
 exceptions raised during the read helper's setup when cleanup also fails.
-
-CI and on `main` at `cf2b5743`; no endpoint or worker handler calls it yet.** Its 39 PostgreSQL
-tests, the evidence for the database-side mitigations below (tenant/vendor scoping, filtering
-before limits, the binding recheck and snapshot-relative supersession), all passed in the main-push
-run (logs retrieved independently by the external reviewer; see the
-ADR-0016 main CI evidence),
-as they did earlier in the historical
-feature-branch run at `3d6e8395`.
-This covers the tested paths in those runs only; it is not a general security guarantee. Claude
-Code's earlier local Windows results are historical.
 
 | Threat | Mitigation (implemented, accepted and verified in CI on `main`) |
 |---|---|
@@ -328,26 +252,10 @@ cannot prove that vectors came from the claimed queries. The evidence digest che
 class of tampering only; no hash protects against a database writer outside the application.
 Repeated table headers are a separate span that citations must not quote across.
 
-## Corpus and retrieval evaluation (M4e, verified in CI and on `main`)
-
+## Corpus and retrieval evaluation
 The M4e specification
 
 ([ADR-0017](decisions/0017-retrieval-evaluation.md)); the
-
-After feature-branch
-verification at `d1dcdfce` (historical; see feature-branch CI evidence),
-M4e is now **reviewed, verified in CI and on `main` at `0ae4c6ca`**: feature CI passed for that
-
-from job logs independently retrieved by the external reviewer (see
-main CI evidence).
-Historically, at `c14821b7`, from job logs retrieved independently by the external reviewer, the PostgreSQL integration job passed (306 passed, including all 16 M4e tests, which
-exercise fresh loading, the read-only verifier and isolation checks against stored chunks), but
-one Ubuntu test failed because its `os.lstat` double re-entered itself on Linux (no production
-defect established; see
-ADR-0017).
-corrected Linux tests and
-both Ubuntu build/wheel steps subsequently passed at `d1dcdfce`. Passing tests supply no numerical Recall result, and no
-database-derived Recall value has been observed. The earlier statement that the M4e PostgreSQL
 
 database write, keep process-control exceptions and fixed refusals through read-cleanup failures,
 return a created vendor only after its transaction commits, and check per-file sizes (64 KiB for
@@ -361,59 +269,12 @@ foreign canaries even when Recall is high, and fixed-code diagnostics without do
 makes no injection-resistance or semantic-quality claim; end-to-end canary and output behaviour
 remain M5/M7.
 
-test-only correction for a local commit after inspecting the export and independently matching
-its size and checksum. The reviewer's isolated standard-library Linux probe confirmed no
-`Path.resolve()` recursion, the target's 10-byte understatement with all other `st_*` fields
-preserved, unchanged non-target stat and real file size, and that the target override ran.
-It did not execute the project test, suite, reader, wheel or database.
-Linux project tests, Ubuntu build/wheel and green current-version CI were pending; these
-subsequently passed at `d1dcdfce` (see feature-branch CI evidence).
-OpenAI Codex assisted with Prompt
-The external reviewer
-independently confirmed the new logs without running local project checks. At that point M4e was verified in feature-branch CI at `d1dcdfce` and
-not yet merged (historical); it is now on `main` at `0ae4c6ca` (above).
-correction commit. M4f and overall M4 acceptance remain pending; local Compose is unverified.
-
-## Voyage embedding adapter (M4f, verified in CI and on `main`)
-
+## Voyage embedding adapter
 The M4f specification
-
-staged it for external review**;
-implementation commit**; after feature-branch verification at `84eec023` (historical) it is
-**reviewed, verified in CI and on `main` at `5acb75e5`** (evidence). The
-controls below are exercised by mocked tests (which passed on Ubuntu and Windows on both
-pushes) and by the two PostgreSQL cases with an in-memory transport (which passed in both
-integration jobs). Nothing constructs the adapter in production, so **none of these controls
-operates in the shipped system**, and mocked tests do not verify live API behaviour. In
 
 closed: a transport `VoyageError` with a missing or raising `code`, and a failing TLS-context
 setup, no longer let a raw exception or its text escape; both now give fresh fixed errors.
 that adds no mitigation. The implemented controls:
-
-- the provider key is supplied only to an explicitly constructed transport as a `SecretStr`,
-  and is never placed in the fingerprint, default representations, public errors, logs,
-  tests or CI;
-- public errors are fresh fixed codes with no cause or context, so document/query text,
-  headers, response bodies and raw transport errors do not reach their messages, default
-  representations, default formatted tracebacks or logs. This does not extend to trusted code
-  inspecting frame locals, the transport's held key or an explicitly held response body;
-- a process-control exception that escapes into adapter-owned code propagates as the same
-  object under a first-outcome cleanup rule, with its own message and traceback unsanitized.
-  **Residual limitation:** one already masked inside `http.client` (for example replaced by an
-  exception from its internal close) cannot be recovered; the escaping ordinary exception is
-  reported as a sanitized transport failure, and no exception chain is inspected. An ordinary
-  failure of the adapter's own response or connection close is ignored, even if its chain holds
-  process control. Live use needing a stronger guarantee requires a separately reviewed
-  transport design;
-- each `embed` makes zero transport calls for invalid input and at most one HTTPS request
-  otherwise, to a fixed host with verified TLS, no redirects, no decompression, no internal
-  retries and no provider truncation;
-- a non-200 response body is never read, and a status-only value carrying a body is refused as
-  malformed; a 200 body is read only after strict framing checks, in bounded reads up to a
-  raw-byte cap, with a body shorter than its declared length detected explicitly (not left to
-  the standard library). The cap bounds accepted raw bytes, not peak memory;
-- every response is fully validated before the existing M4a and storage checks, with no
-  renormalization or zero-vector acceptance.
 
 **Timing is cooperative, not a hard deadline:** a 10 s connect timeout, a 30 s socket I/O
 timeout per blocking wait and a 60 s elapsed-time budget checked before and after each phase.
@@ -422,11 +283,6 @@ attempts, TLS, header parsing and internal buffered or chunked reads can exceed 
 standard library releases the connection socket after the headers, body reads keep the earlier
 socket timeout; and cleanup has no deadline, so **no hard wall-clock maximum is established**;
 a hard deadline would need a separately reviewed transport design.
-
-No production registration, setting, CLI, endpoint or automatic indexing is specified, so no
-live call is possible from the shipped defaults, which stay offline. Unverified Voyage API
-behaviour (model echo, framing, normalization tolerance, model immutability) is not settled by
-acceptance. Residual risks once implemented:
 
 - sending vendor text to a third-party service (a data-handling decision for any live use in
   M7);
@@ -437,19 +293,9 @@ acceptance. Residual risks once implemented:
 
 The settled decisions, details and the unresolved external API facts are listed in the plan.
 
-## Review workflow (M5: sequence and M5a–M5e specifications accepted; M5a, M5b and M5c on main; M5d on main; M5e implemented and staged for review)
-
+## Review workflow
 The M5 implementation sequence
 and the M5a specification
-
-([ADR-0019](decisions/0019-model-call-contracts.md)).
-`feat/model-call-contracts` and all five required jobs passed in feature-branch CI at `9ba6a488`**
-(feature evidence).
-From job logs independently retrieved by the external reviewer (Claude Code observed only API
-conclusions), both installed-wheel logs printed the M5a line and the Ubuntu, Windows and PostgreSQL
-test jobs and full-history Gitleaks (75 commits, no leaks) passed; this is scripted-fake contract
-evidence, not live-model behaviour.
-exact-commit feature CI, and the feature and main-push runs passed.
 
 | Threat | M5a control (on `main` at `f04e0957`, verified in feature and main-push CI) |
 |---|---|
@@ -474,102 +320,15 @@ protection against direct database writers or malicious in-process code); call r
 stage and output writes are fenced; and no production path can dispatch a review until a reviewed
 wiring decision.
 
-**M5b controls.** See [ADR-0020](decisions/0020-provenance-validation.md); from the job logs
-independently retrieved by the external reviewer, the Ubuntu, Windows and PostgreSQL jobs passed on both pushes, all four
-installed-wheel logs printed the provenance line, and Gitleaks scanned 77 commits with no leaks
-(main evidence).
-This is contract evidence, not live-model behaviour. The
-M5b specification
-specifies: input identity binding (tenant, review and question checked before any finding is
-examined, including for empty outputs, and analysis relying on Verifier values already rechecked
-against trusted evidence); citations accepted only for chunks in the question's trusted retrieval result, with
-tenant, revision, source type and authenticity taken from that evidence, never from the model;
-**segment-wise NFD matching** with whitespace collapsing, matched separately within body and
-repeated-header text and storing the exact original substring with exact offsets; all-or-nothing
-rejection with fixed, text-free reasons; every claim of a `supported` or `contradicted` verdict
-cited; status derived deterministically from the verdict and source types; reload validation that
-recomputes each match from trusted evidence; Analyst findings limited to citations the Verifier
-already validated; and a mandatory deterministic finding for vendor-only answers to questions that
-require documentary support, kept in the report even if analysis fails. **Limits:** the matching
-rule is deliberately limited and is not full Unicode canonical equivalence, so canonically
-equivalent spellings can match differently (false rejections, and a Hangul partial-syllable
-asymmetry); provenance would still prove quote existence only, not entailment or authenticity; and
-reload checks detect values inconsistent with trusted evidence, not a malicious trusted process or
-which retrieval request originally ran.
-
-[ADR-0021](decisions/0021-review-request-assembly.md); from the job logs independently retrieved by
-the external reviewer, the Ubuntu, Windows and PostgreSQL jobs passed on
-both pushes, all four installed-wheel logs printed the M5c line and Gitleaks scanned 80 commits
-with no leaks (contract evidence, not live-model behaviour); no application path uses them, so none operates).** The
-M5c specification
-specifies a packaged, digest-pinned review template and versioned prompts loaded only through
-pinned-reference loaders with bounded reads (no ground-truth access), a deterministic Planner, and
-request assembly that binds the system text to the pinned prompt digest (which M5a's request does
-not check), places every untrusted document string and earlier model-derived text only inside JSON
-string values of a closed schema (so delimiter-like text cannot forge structure, and a correctly
-encoded quotation is returned as original text by M5a's existing two-pass validation, with no
-further decoding, before M5b
-matching), rejects metadata that is not valid Unicode, inserts no trusted tenant, review, snapshot
-or document ID as metadata, refuses oversize requests before dispatch instead of truncating, and
-builds repair requests by reassembly with only fixed repair fields. **Limits:** encoding prevents
-structural forgery only; it does not stop a model from following persuasive document text
-(semantic injection), which only live evaluation can measure (M7); a model may still encode a
-quotation wrongly, which fails the existing checks; request digests identify content, not tenant
-or review; and assembly cannot prove that its evidence or Verifier inputs came from trusted paths,
-which remains M5g's obligation.
-
 implemented
 
-after feature CI at `1bea3731` failed on
-three PostgreSQL tests and test-only corrections followed, reviewed, verified in CI and on `main`
-at `1efe3ed3`; no production path uses them, so
-none operates in the application).** The M5e persistence controls are
-specified and accepted and
-
 nested aggregate rebuilds; constructors remain consistency checks only), and accepted at external
-
-(implementation status,
-[ADR-0023](decisions/0023-review-stage-persistence.md)): fenced writes bound to the canonical
-`run_review` job with ownership rechecked at entry and after the last write, the
-three-reservation budget and single repair across attempts, explicit completion identity,
-identical-replay no-ops and fixed conflicts, and a trusted reload that rechecks evidence against
-database chunks. M5e is reviewed, verified in CI and on main at `14f510e`
-(main publication evidence).
 
 clarifications.
 (implementation status, [ADR-0024](decisions/0024-review-report-content.md)).
 
-evidence checks after external review findings (correction):
-retained evidence must match the configured retrieval `k`, closed U4 must retain none, and
-every other committed Verification shape must retain evidence bound to its digest.
-
-implementation commit only** (acceptance).
-These are supported-input consistency checks: they do not establish database origin,
-entailment, authenticity, semantic injection resistance or live-model quality. All five
-required jobs passed at `3e58f650` on `feat/review-report-content`. Only
-conclusions were observable to Claude Code. The reviewer later retrieved the logs
-independently (PostgreSQL `385 passed`, Gitleaks with 92 commits and no leaks), and the
-container smoke does not exercise M5f.
-authorized gated main publication. M5f is **reviewed, verified in CI and on main at
-`e7dd3be3`** (main evidence), within its
-accepted scope. All five main jobs passed. The reviewer independently retrieved all ten
-`e7dd3be3` job logs (ADR-0024),
-including main PostgreSQL `385 passed` and Gitleaks with 93 commits and no leaks. That verifies
-packaging, regression and structural checks, not runtime protection. The
-M5g orchestration specification
-
-(acceptance).
-
 [ADR-0025](decisions/0025-review-orchestration.md)). Its feature CI at `f0d4ce92` failed: the
 PostgreSQL job ran with one failure, an invalid cross-question test comparison corrected in
-
-(f0d4ce92 evidence).
-At the corrective commit `3d41f435` all five required feature-CI jobs passed, including
-PostgreSQL integration (evidence).
-Claude Code saw conclusions only. The external reviewer's retrieved logs show all 439
-selected integration tests passing, including the 54 M5g positions, and the reviewer
-
-M5g is now **reviewed, verified in CI and on main at `bebd2f75`**. The reviewer
 
 (reviewer logs).
 
@@ -587,11 +346,6 @@ None of this operates in an application review path: no endpoint, command or pro
 registration builds the handler, no live provider is configured, and `run_review` remains
 unregistered.
 
-**M4d and E7.** The external reviewer accepted the M4d trusted-snapshot
-requirement and E7's deferred output-persistence and atomic-finish requirement as **satisfied
-for the internal `run_review` handler composition at `bebd2f75`**
-(scoped acceptance).
-
 - **Basis.** Source inspection and the complete passing PostgreSQL module results. The logs
   print positions, not names, so the replacement-activation result is inferred from the source.
   That is an evidence-granularity limitation, not an implementation gap.
@@ -604,38 +358,6 @@ for the internal `run_review` handler composition at `bebd2f75`**
 - **Unchanged.** U4's discarded evidence, database trust, the M3 lease/commit window, unknown
   outcomes, M6's approval and export obligations, and the provenance-versus-semantic limits.
 
-It is **reviewed, verified in CI and on main** at `e050da3e3415d73f83db86763617d5b5f0874aeb`,
-within its accepted scope
-(ADR-0026 main publication and separate CI evidence).
-Mathew manually pushed the feature, all five fresh feature jobs passed, Codex fast-forwarded
-local main with `--ff-only`, and Mathew manually pushed main. All five separate main jobs
-passed for the exact SHA, `push`, attempt 1. Each branch's retrieved logs show Ubuntu
-5,562 passed / 439 skipped, Windows 5,561 passed / 440 skipped, PostgreSQL 439 passed /
-5,562 deselected, successful container smoke/cleanup and Gitleaks 102 commits with no leaks.
-Each verify log prints the new synthetic M5h installed-wheel line. Container smoke covers
-ingestion/indexing only. Earlier `c785ee58` evidence and the reviewer's independent acceptance
-remain historical.
-
-(publication acceptance).
-The publication-evidence documentation was not itself CI-tested. The separate
-M5 acceptance assessment
-The reviewer independently
-confirmed the three completion gaps: provider-call spans, the controlled post-response/
-pre-commit crash proof, and the parts-assembled canary acceptance fixtures. These do not
-establish a production recovery defect or revoke individual slice/scoped M4d/E7 acceptance.
-The bounded follow-up
-its
-
-local verification; they are not full handler/database, installed-wheel or CI evidence. G1-G3
-remain open. After Mathew's manual push, the completion is
-**feature-CI verified, not merged** at `2a388dc324950d9feb46dbba3ffb75222f2a938e`
-(Codex's exact-commit observations).
-All five feature push/attempt-1 jobs passed; retrieved PostgreSQL logs show eight handler and
-four canary passing positions, with the exact-target source inventory identifying the new
-post-response/reclaim and assembled/literal cases. These are module positions, not individually
-printed names. Both wheel logs print the new collected/serialized span line. The controlled
-interruption is not a physical process kill. The reviewer independently confirmed and accepted
-
 (decision and local blocker).
 Docker tooling was unavailable locally; no disposable database, control or mutation ran, and
 no task container/storage was created.
@@ -643,103 +365,11 @@ permits execution of the same mutations in the existing disposable CI PostgreSQL
 (separate amendment and runner preparation).
 The isolated-copy runner/additive step was accepted for one local commit and manual feature
 
-The reviewer reports 95 isolated standard-library checks, separate from Codex checks and
-PostgreSQL/CI execution. Source/import/oracle/restoration checks and bounded subprocesses
-remain unchanged. After Mathew's manual push of `52071373`, Codex verified all five exact-target
-feature jobs, the full PostgreSQL suite first, baseline/restored controls and intended A-D
-detections with source/import/assertion/restoration and checkout-preservation proofs
-(executed evidence and retention limits).
-Status: **feature-CI verified, not merged; mutation evidence ready for external review.**
-Decoded logs and decisive JSON were retained; full ephemeral phase/JUnit/command records were
-not retrieved. Strict phase/error/skip rejection is enforced by the exact successful reviewed
-runner.
-G1-G3 are satisfied within the tested internal review-handler scope at `52071373`
-(separate closure decision).
-Their log/proof inspection and hash reconstruction was not local database execution. They
-accept retained decisive proofs plus exact runner execution despite unavailable full ephemeral
-records. A's relocated oracle and D's explicit cardinality remain test-owned sensitivity
-mutations, not production fault injection. Earlier open/review-pending states are historical.
-No accepted production/test contract is changed. Completion evidence is now published on
-main at `205c987e` with separate successful feature/main gates,
-including repeated intended database sensitivity proofs. All 270 protected identities carry
-G1-G3 closure to that version.
-feature/main evidence, 23-row reassessment and **overall M5 within the reviewed scope at
-implementation baseline `205c987e`** (decision and retained limits).
-The accepted scope is internal, tenant-bound, snapshot-pinned and fenced, with scripted
-providers, persisted budgets/stages/outputs, privacy-bounded spans, trusted reload, deterministic
-hash-covered reports and the offline Anthropic adapter. Later acceptance-document publication
-changes no executable behavior. W8, W9/M7 and W14/M6 remain pending; no M6/M7 acceptance or
-release-readiness claim follows. The ephemeral metadata-only
-spans prove neither provider receipt nor committed
-results; synchronous logging adds no hard wall-clock guarantee. Default span logs contain only
-the closed validated correlation/timing/outcome object, never evidence, responses or exception
-text. No telemetry-driven retry or compensating database write is introduced. Overall M5 is accepted only within the reviewed internal scope at implementation baseline `205c987e`. No live-provider evidence or application review path follows.
-The reviewer's 73 isolated probes and the CI synthetic tests establish no real provider
-HTTP/DNS/TLS or live compatibility. Recovery supports the saved functional/build records,
-but exact-final-source mutation coverage and universal historical absence of network activity
-were not independently established; the mutation runner lacks `--offline`, which does not
-demonstrate network activity. Recovery did not rerun the saved checks.
-Its HTTPS transport tests used fake connections and an in-memory socket,
-and no M5h control operates in an application path. It adds no live provider and claims no
-model quality or injection resistance. Scripted canary tests do not
-establish live-model injection resistance.
-boundaries over scripted sessions (read process control, fixed database errors, writer
-precedence and ownership) and corrected the constraint-test attribution; no production byte
-changed. None of these controls operates in an application review path. Their database
-evidence is the reviewer-retrieved PostgreSQL module results, and M4d and E7 are accepted only
-for the internal composition (above). M5e is reviewed,
-CI verified and on main at `14f510e`; its publication evidence was independently accepted
-M6 and overall M5 acceptance remain pending.
-
-Its five-job feature gate passed before the authorized fast-forward and manual main push;
-all five separate main jobs passed, including PostgreSQL (385 passed). The terse logs show
-46 passing review-stage module positions without individually naming the replacement case.
-The earlier setup failure and feature-only/pending states remain historical. No application path uses it, so none
-operates; no application review path, `run_review` registration, output writer or live provider
-is added; the report output stays with M5f/M5g (E7), and M5f–M5h and overall M5 acceptance
-remain pending. A U4 stage's discarded evidence and its original binding cannot be re-proved, and
-persistence cannot prove template origin, original retrieval execution or request reassembly. See
-[ADR-0022](decisions/0022-review-creation.md) and the
-implementation status. The
-M5d specification
-specifies one REPEATABLE READ, READ WRITE creation transaction whose visibility follows the MVCC
-snapshot established by its first data statement (the `clock_timestamp()` read, whose value is
-recorded but is not an ordering proof), captures the snapshot through a public capture
-function that never ends the caller's transaction, and commits the review, its bindings, the
-exclusions, the pinned template, prompt and model configuration and the `run_review` job (linked
-by a stored, validated reference) together or not at all; idempotent creation keyed by a
-tenant-scoped client key with a request digest bound to the actor's tenant that excludes the
-captured snapshot; database failures classified only into fixed, allowlisted categories (no raw
-error, message or SQL retained); a bounded retry in fresh transactions for known conflict codes
-only (during `COMMIT`, only exact serialization and deadlock rejections), a commit state tracked
-separately from the exception in flight, best-effort connection invalidation when cleanup fails (an automatic retry only when the normal
-rollback and close both returned; no claim that the original connection was physically discarded), and an
-unknown commit outcome (including PostgreSQL's resolution-unknown codes) that is never reported
-as a rollback or retried automatically; and a trusted reload that
-rebuilds the snapshot through its constructors, recomputes and compares the stored digests and
-loads the pinned template and prompts through the M5c loaders. **Limits:** the digests only detect
-disagreement between stored rows; nothing protects against direct database writes or malicious
-trusted in-process code; the M4d trusted-snapshot limitation would close for review paths only,
-once M5d is implemented and verified and M5g uses the loader; creation stays an internal or
-test-only seam, and `run_review` stays out of the production registry.
-
 The accepted sequence also requires that every conclusion shown in an approval or export artifact
 be in its canonical hashed content, or derived solely from it, so no displayed conclusion can come
 from unhashed stage rows.
 
-**Limits.** The M5 criterion "the injection canary never appears in output" is
-kept, as an end-to-end contract assertion over specified scripted-fake fixtures: an acceptance
-fixture with an authorized injected document in the retrieved evidence and the model request must
-show no canary in the checked outputs, and a canary-emitting negative control must make the same
-checker fail. Passing it would not show that a live model resists injection, which needs live
-evaluation (M7). Provenance checks prove quote existence only: a genuine quotation containing a
-canary from an authorized document passes them and can appear in a report (a separately labelled
-limitation probe), and there is no canary denylist, so canary text a model emits in free-text
-fields would be stored and rendered. Model calls stay at least once, bounded by persisted budgets;
-no exactly-once guarantee is made. The M4 limits above are unchanged.
-
-## Reports, approval and audit (M6)
-
+## Reports, approval and audit
 Routes under `/v1/reports` ([ADR-0028](decisions/0028-approval-gate-and-export.md)) expose a
 completed review's stored output as a report with hash-bound revisions, approval or rejection,
 finalization and export.
@@ -769,25 +399,12 @@ can be compared with the audit row. Downgrading migration 0009 deletes all repor
 There is no rate limiting on these routes. Each export appends an append-only audit row, so audit
 growth is bounded only by request volume; rate limiting is out of scope for v0.1.
 
-## Not implemented yet
-
-- **Rate limiting, lockout, key expiry and usage auditing** for API keys. Direct domain callers (tests, later the worker) still construct `ActorContext` themselves and are trusted.
-- **Database tenancy.** The M2a schema adds tenant foreign keys, unique `(tenant_id, id)` keys, and a composite `(tenant_id, user_id)` key from API keys to users. PostgreSQL enforcement of these constraints was verified in CI for commit `9ad7dae` ([integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38158076257/job/114525070229): 10 passed, none skipped); M2a was then fast-forwarded onto `main` at `e2dee5c`, where the [integration job](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38159547345/job/114529402973) passed again (`10 passed, 250 deselected`). M2b derives the tenant only from authenticated records; M2c adds tenant-filtered vendor queries, whose two-tenant isolation passed against PostgreSQL in CI at `a888b6c` on its branch and again on `main` at `9d5a93a`. Row-level security is a later enhancement.
-- **Database credentials and URLs.** `EG_DATABASE_URL` is read only from the environment and held as a secret.
-  - **Query parameters:** only `sslmode` and `connect_timeout` are accepted, each once. So a URL cannot use the query to override the validated database or host, or to carry credentials and server options that password masking would not hide.
-  - **Errors:** configuration errors from `load_database_settings()` never include the URL, its query values or its credentials. That wrapper is the supported boundary, because pydantic's `hide_input_in_errors` does not make structured `ValidationError` dumps safe. Representations and engine logs mask the password.
-  - **Logging:** SQL echo is off and SQL parameters are hidden.
-  - **Process environment:** libpq environment variables (such as `PGHOSTADDR`) are outside this validation.
-  - **Disposable credentials:** the Compose and CI credentials are disposable and documented as such.
-- **Destructive integration tests.** The PostgreSQL tests drop the `public` schema of `EG_TEST_DATABASE_URL`. Before any engine exists, they refuse a missing or invalid URL, a database name without the `_test` suffix, an invalid `EG_DATABASE_URL`, or a target with the same host, port and database as `EG_DATABASE_URL` (ignoring credentials, spelling and loopback aliases). URL comparison cannot detect two different DNS names for one server, so the test database must be explicitly disposable. In CI for commit `9ad7dae`, the guard accepted the disposable service database before the [integration tests](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38158076257/job/114525070229) ran against it. Its refusal paths are covered by database-independent tests on Ubuntu and Windows. Compose has never been run.
-- **Atomic, concurrent-safe transitions.** The report transitions are pure functions. Two simultaneous requests could both pass validation; persistence must serialize them (for example with a row lock or compare-and-set on revision and hash). The M3a job fence (above) provides this pattern for jobs; reports do not use it yet.
-- **Upload limits and untrusted-file handling** (M3e): implemented, reviewed, **verified in CI and on `main`** (see *Document API* above).
-- **Provenance checks:** that a cited chunk was actually retrieved for the review and that the quote occurs in it (M5). The pure M5b checks are implemented, reviewed, CI-verified and on `main` at `90295717` ([ADR-0020](decisions/0020-provenance-validation.md)); no review path uses them until M5g.
-- **Secret handling beyond the database URL and API keys.** The database URL (M2a) and API keys (M2b) are covered above. Other secrets, such as model-provider keys, arrive with later milestones. Request logging (M1c) writes only allowlisted fields; see ADR-0002.
-
 ## Open risks
 
-- **Prompt injection.** Uploaded documents are untrusted and may contain instructions aimed at the model. The planned mitigations (delimited evidence, no model tools, validated structured output, human approval) reduce but cannot eliminate the risk. Paired clean/injected evaluation is planned for M7; nothing is measured yet.
-- **Semantic support.** No component yet checks whether a cited passage actually supports a claim. That needs model judgment plus human review.
-- **Document authenticity.** Not established anywhere in v1 (see [responsible-ai.md](responsible-ai.md)).
-- **Secrets in the repository.** Mitigated by Gitleaks locally and in CI. The full-history scan [passed](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38142996460) for the published baseline `6d64fb3` and [again](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38159547321) for `main` at `e2dee5c` and [at `277dfea`](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38167398504), and for branch `feat/vendor-api-readiness` [at `a888b6c`](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38212619867), and for `main` [at `9d5a93a`](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38214711864) and [at `b3f9845`](https://github.com/mathewmljourney93/evidenceguard-agentic-rag/actions/runs/38242144876). Pattern scanners cannot detect every secret.
+- **Prompt injection.** Uploaded documents are untrusted and may contain instructions aimed at the model. Mitigations: delimited evidence, no model tools, schema-validated output, verbatim quote checks and a human approval gate. Resistance has not been measured.
+- **Semantic support.** The quote check proves a quotation exists in a retrieved passage, not that the passage supports the claim. That needs the human reviewer.
+- **Database trust.** The database and its operators are trusted. Append-only history depends on the runtime role not owning the tables, which is not enforced.
+- **No rate limiting, lockout or key expiry.** Audit and review volume are bounded only by request volume and the per-tenant in-flight cap, which limits concurrency and is not a spend limit.
+- **Transport.** The services speak plain HTTP; TLS termination is the deployer's responsibility.
+- **Retrieval ties.** Ties are broken by chunk id, so rankings can differ between fresh databases.
+- **Secrets.** Database URL and API keys are held as masked secrets. The model key is read only by the worker. Other secret handling is a deployer concern.

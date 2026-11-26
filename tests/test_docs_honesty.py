@@ -25,6 +25,7 @@ CLAIM_PHRASES = (
     "precision of",
     "f1 score",
     "state of the art",
+    "state-of-the-art",
 )
 _TODO = re.compile(r"\bTODO\b")
 _STATUS_HEADING = re.compile(r"^#{1,6}[ \t]+status\b", re.IGNORECASE | re.MULTILINE)
